@@ -120,7 +120,7 @@ def obtener_historial_reciente():
     filtrado = [h for h in historial if h.get("timestamp", 0) >= limite_tiempo and h.get("usuario") == st.session_state.usuario_actual]
     return sorted(filtrado, key=lambda x: x["timestamp"], reverse=True)
 
-# --- PARSER DE PDF ---
+# --- PARSER DE PDF CORREGIDO ---
 def extraer_preguntas_de_pdf(pdf_file):
     reader = PdfReader(pdf_file)
     texto_completo = ""
@@ -161,7 +161,7 @@ def extraer_preguntas_de_pdf(pdf_file):
         en_alternativas = False
         
         for linea in lineas:
-            if re.match(r'^([☑☒X✔✓xVv]\s*[A-Da-d])[\.\-\)]', linea) or re.match(r'^[☑☒X✔✓xVv]\s*[\-\.]?', linea) or en_alternativas:
+            if re.match(r'^[☑☒X✔✓xVv]?\s*[A-Da-d][\.\-\)]', linea) or en_alternativas:
                 en_alternativas = True
                 lineas_alts.append(linea)
             else:
@@ -176,6 +176,8 @@ def extraer_preguntas_de_pdf(pdf_file):
         alternativas = []
         correcta_idx = None
         texto_completo_alts = "\n".join(lineas_alts)
+        
+        # Fragmentar por cada alternativa A, B, C, D de forma limpia
         fragmentos = re.split(r'(?=[☑☒X✔✓xVv]?\s*[A-Da-d][\.\-\)])', texto_completo_alts)
         
         mapa_alts = {}
@@ -193,15 +195,20 @@ def extraer_preguntas_de_pdf(pdf_file):
                 es_marcada = bool(marca_simbolo) or any(s in frag[:12] for s in ['☑', '☒', 'X', '✔', '✓', 'x', '[x]', '(X)', '[X]', 'V'])
                 for s in ['☑', '☒', 'X', '✔', '✓', 'x', '[x]', '(X)', '[X]', 'V', '•', '(*)', '❌', '×']:
                     texto = texto.replace(s, "")
+                
+                # Limpiar guiones iniciales sobrantes (ej: "- - Texto" -> "Texto")
+                texto = re.sub(r'^[\-\.\s]+', '', texto).strip()
                 texto = " ".join(texto.split()).strip()
                 
-                mapa_alts[letra] = {"texto": texto, "marcada": es_marcada}
+                if texto:
+                    mapa_alts[letra] = {"texto": texto, "marcada": es_marcada}
             else:
                 if mapa_alts:
                     ultima_letra = list(mapa_alts.keys())[-1]
                     es_marcada_flotante = any(s in frag for s in ['☑', '☒', 'X', '✔', '✓', 'x', '[x]', '(X)', '[X]'])
                     for s in ['☑', '☒', 'X', '✔', '✓', 'x', '[x]', '(X)', '[X]', 'V', '•', '(*)', '❌', '×']:
                         frag = frag.replace(s, "")
+                    frag = re.sub(r'^[\-\.\s]+', '', frag).strip()
                     frag = " ".join(frag.split()).strip()
                     if frag:
                         mapa_alts[ultima_letra]["texto"] += " " + frag
@@ -210,18 +217,15 @@ def extraer_preguntas_de_pdf(pdf_file):
 
         letras_ordenadas = ['A', 'B', 'C', 'D']
         for idx_a, l in enumerate(letras_ordenadas):
-            if l in mapa_alts:
+            if l in mapa_alts and mapa_alts[l]["texto"]:
                 info = mapa_alts[l]
                 if info["marcada"]:
-                    correcta_idx = idx_a
+                    correcta_idx = len(alternativas)
                 alternativas.append({
                     "letra": l,
                     "texto": info["texto"],
                     "marcada": info["marcada"]
                 })
-
-        if correcta_idx is None and alternativas:
-            correcta_idx = None # Deja en blanco si no viene marcado en el documento
 
         if enunciado and len(alternativas) >= 2:
             preguntas_parsed.append({
@@ -360,7 +364,7 @@ elif st.session_state.vista == "historial":
         st.session_state.vista = "home"
         st.rerun()
 
-# --- VISTA: ESTUDIO (CON MANEJO SEGURO DE SELECCIÓN EN st.radio) ---
+# --- VISTA: ESTUDIO ---
 elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     estudio = st.session_state.modo_estudio_data
     preguntas = estudio["preguntas"]
@@ -403,7 +407,6 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     estado_actual_q = resp_dict[idx_actual]
     corregido = estado_actual_q.get("corregido", False)
     
-    # Construcción de opciones incluyendo marcador de posición para evitar selección por defecto
     opciones_tuplas = [(-1, "Seleccione una alternativa...")] + [(i, f"{alt['letra']}.- {alt['texto']}") for i, alt in enumerate(q_actual["alternativas"])]
     
     seleccion_indice_actual = estado_actual_q.get("elegida", None)
@@ -431,7 +434,6 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
         else:
             resp_dict[idx_actual]["elegida"] = None
 
-    # Selector manual de administrador si el PDF no traía la respuesta marcada
     if q_actual.get("correcta") is None:
         st.warning("⚠️ Esta pregunta NO tiene respuesta correcta detectada automáticamente. Como administrador, asígnala aquí para guardarla permanentemente:")
         col_m1, col_m2 = st.columns([3, 1])
