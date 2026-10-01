@@ -15,10 +15,25 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- CAPA DE DISEÑO UI/UX DE ALTA GAMA (CUSTOM CSS) ---
-st.markdown("""
-<style>
-    /* Variables de diseño y colores base */
+# --- GESTIÓN DE TEMA (MODO OSCURO / CLARO / AUTO) ---
+if "tema_app" not in st.session_state:
+    st.session_state.tema_app = "Automático (Dispositivo)"
+
+# --- CAPA DE DISEÑO UI/UX ADAPTATIVA ---
+css_light = """
+    :root {
+        --bg-main: #f8fafc;
+        --bg-card: #ffffff;
+        --accent-blue: #0284c7;
+        --accent-hover: #0369a1;
+        --text-main: #0f172a;
+        --text-muted: #64748b;
+        --border-color: #cbd5e1;
+        --sidebar-bg: #f1f5f9;
+    }
+"""
+
+css_dark = """
     :root {
         --bg-main: #0f172a;
         --bg-card: #1e293b;
@@ -27,21 +42,40 @@ st.markdown("""
         --text-main: #f8fafc;
         --text-muted: #94a3b8;
         --border-color: #334155;
+        --sidebar-bg: #0b0f19;
     }
+"""
 
-    /* Estilo general de la aplicación */
-    .stApp {
+# Definición de estilos condicionales según la selección del usuario
+if st.session_state.tema_app == "Modo Oscuro":
+    css_tema = css_dark
+elif st.session_state.tema_app == "Modo Claro":
+    css_tema = css_light
+else:
+    # Automático: usa el media query del navegador/dispositivo
+    css_tema = f"""
+        @media (prefers-color-scheme: dark) {{
+            {css_dark}
+        }}
+        @media (prefers-color-scheme: light) {{
+            {css_light}
+        }}
+    """
+
+st.markdown(f"""
+<style>
+    {css_tema}
+
+    .stApp {{
         background-color: var(--bg-main);
         color: var(--text-main);
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }
 
-    /* Ocultar elementos predeterminados molestos si se desea, manteniendo la limpieza */
-    header {visibility: hidden;}
+    header {{visibility: hidden;}}
     
-    /* Botones principales de alta gama */
-    div.stButton > button {
-        background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%);
+    div.stButton > button {{
+        background: linear-gradient(135deg, var(--accent-blue) 0%, var(--accent-hover) 100%);
         color: white;
         border: none;
         border-radius: 10px;
@@ -51,58 +85,37 @@ st.markdown("""
         box-shadow: 0 4px 14px rgba(2, 132, 199, 0.3);
         transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     }
-    div.stButton > button:hover {
+    div.stButton > button:hover {{
         transform: translateY(-2px);
         box-shadow: 0 6px 20px rgba(56, 189, 248, 0.4);
-        background: linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%);
     }
 
-    /* Botones secundarios */
-    div.stButton > button[kind="secondary"] {
+    div.stButton > button[kind="secondary"] {{
         background: var(--bg-card);
         border: 1px solid var(--border-color);
         color: var(--text-main);
         box-shadow: none;
     }
-    div.stButton > button[kind="secondary"]:hover {
-        border-color: var(--accent-blue);
-        color: var(--accent-blue);
-    }
 
-    /* Campos de entrada refinados */
-    .stTextInput input, .stSelectbox select, .stPasswordInput input {
+    .stTextInput input, .stSelectbox select, .stPasswordInput input {{
         background-color: var(--bg-card) !important;
         color: var(--text-main) !important;
         border: 1px solid var(--border-color) !important;
         border-radius: 10px !important;
         padding: 0.5rem 0.75rem !important;
-        transition: border-color 0.2s ease;
-    }
-    .stTextInput input:focus, .stSelectbox select:focus {
-        border-color: var(--accent-blue) !important;
-        box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
-    }
+    }}
 
-    /* Sidebar de alta gama */
-    section[data-testid="stSidebar"] {
-        background-color: #0b0f19;
+    section[data-testid="stSidebar"] {{
+        background-color: var(--sidebar-bg);
         border-right: 1px solid var(--border-color);
-    }
+    }}
 
-    /* Tarjetas y métricas */
-    div[data-testid="metric-container"] {
+    div[data-testid="metric-container"] {{
         background-color: var(--bg-card);
         border: 1px solid var(--border-color);
         padding: 1rem;
         border-radius: 12px;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-    }
-
-    /* Barras de progreso elegantes */
-    div[data-testid="stProgress"] > div > div {
-        background: linear-gradient(90deg, #0ea5e9 0%, #38bdf8 100%);
-        border-radius: 10px;
-    }
+    }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -237,11 +250,10 @@ def obtener_historial_reciente():
         return []
     
     limite_tiempo = datetime.now().timestamp() - (20 * 24 * 60 * 60)
-    # Corrección del error de sintaxis en el corchete de cierre de "usuario"
     filtrado = [h for h in historial if h.get("timestamp", 0) >= limite_tiempo and h.get("usuario") == st.session_state.usuario_actual]
     return sorted(filtrado, key=lambda x: x["timestamp"], reverse=True)
 
-# --- PARSER ULTRA-EFICIENTE (MULTIPÁGINA Y VECTORIAL) ---
+# --- PARSER ULTRA-EFICIENTE ---
 def extraer_preguntas_de_pdf(pdf_file):
     texto_completo = ""
     hojas_texto_estilo = []
@@ -428,8 +440,8 @@ def extraer_preguntas_de_pdf(pdf_file):
 
 # --- CONTROL DE ACCESO ---
 if st.session_state.usuario_actual is None:
-    st.markdown("<h2 style='text-align: center; color: #38bdf8;'>✈️ AeroStudio Pro - Acceso al Sistema</h2>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #94a3b8; margin-bottom: 2rem;'>Plataforma avanzada de estudio y entrenamiento aeronáutico.</p>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center; color: var(--accent-blue);'>✈️ AeroStudio Pro - Acceso al Sistema</h2>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: var(--text-muted); margin-bottom: 2rem;'>Plataforma avanzada de estudio y entrenamiento aeronáutico.</p>", unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
@@ -483,6 +495,18 @@ with st.sidebar:
     st.caption("Piloto en Entrenamiento")
     st.divider()
     
+    # Selector de tema interactivo en la barra lateral
+    nuevo_tema = st.selectbox(
+        "🎨 Tema Visual",
+        options=["Automático (Dispositivo)", "Modo Oscuro", "Modo Claro"],
+        index=["Automático (Dispositivo)", "Modo Oscuro", "Modo Claro"].index(st.session_state.tema_app)
+    )
+    if nuevo_tema != st.session_state.tema_app:
+        st.session_state.tema_app = nuevo_tema
+        st.rerun()
+
+    st.divider()
+    
     if st.button("👤 Perfil de Usuario", use_container_width=True):
         st.session_state.vista = "perfil"
         st.rerun()
@@ -499,7 +523,9 @@ with st.sidebar:
     st.divider()
     st.info("💡 **Consejo:** Utiliza el botón de engranaje (⚙️) durante tus exámenes para ajustar respuestas en tiempo real.")
     st.write("")
-   if st.button("🚪 Cerrar Sesión", type="secondary", use_container_width=True):
+    
+    # Corrección aplicada de indentación y uso de type="secondary"
+    if st.button("🚪 Cerrar Sesión", type="secondary", use_container_width=True):
         st.session_state.usuario_actual = None
         eliminar_sesion_persistida()
         st.session_state.vista = "home"
@@ -584,13 +610,12 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     respondidas_fail = sum(1 for k, v in resp_dict.items() if v.get("estado") in ["incorrecta", "omitida"])
     puntaje_porcentaje = int((respondidas_ok / total_preguntas) * 100) if total_preguntas > 0 else 0
     
-    # Barra superior de navegación de estudio con botón de engranaje (⚙️) integrado
     col_top1, col_top_gear, col_top2 = st.columns([4, 0.6, 2.4])
     with col_top1:
         st.markdown(f"**Q: {idx_actual + 1}/{total_preguntas}** &nbsp;|&nbsp; ✅ {respondidas_ok} &nbsp;|&nbsp; ❌ {respondidas_fail} &nbsp;|&nbsp; 📈 **{puntaje_porcentaje}%**")
     
     with col_top_gear:
-        with st.popover("⚙️️", help="Editor rápido de la pregunta actual"):
+        with st.popover("⚙", help="Editor rápido de la pregunta actual"):
             st.markdown("#### 🛠️ Ajuste de Pregunta")
             q_actual_pop = preguntas[idx_actual]
             opciones_textos_pop = [f"{alt['letra']}.- {alt['texto']}" for alt in q_actual_pop["alternativas"]]
@@ -667,7 +692,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
             resp_dict[idx_actual]["elegida"] = None
 
     if q_actual.get("correcta") is None:
-        st.warning("⚠️️ Esta pregunta no tiene respuesta correcta automática. Haz clic en el engranaje superior ⚙️ para asignarla.")
+        st.warning("⚠️ Esta pregunta no tiene respuesta correcta automática. Haz clic en el engranaje superior ⚙️ para asignarla.")
 
     if corregido:
         idx_correcta = q_actual.get("correcta")
@@ -684,7 +709,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     col_bot1, col_bot2, col_bot3 = st.columns([2, 4, 2])
 
     with col_bot1:
-        if st.button("⬅️ Omitir", kind="secondary", use_container_width=True):
+        if st.button("⬅️ Omitir", type="secondary", use_container_width=True):
             resp_dict[idx_actual]["estado"] = "omitida"
             resp_dict[idx_actual]["corregido"] = True
             if idx_actual < total_preguntas - 1:
@@ -792,7 +817,7 @@ else:
                             st.session_state.vista = "estudio"
                             st.rerun()
                     with subcol2:
-                        if st.button("🗑️", key=f"btn_del_{b_id}", kind="secondary", use_container_width=True, help="Eliminar banco"):
+                        if st.button("🗑️", key=f"btn_del_{b_id}", type="secondary", use_container_width=True, help="Eliminar banco"):
                             eliminar_banco(b_id)
                             st.rerun()
                 st.divider()
