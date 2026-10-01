@@ -80,7 +80,7 @@ def obtener_historial_reciente():
     filtrado = [h for h in historial if h.get("timestamp", 0) >= limite_tiempo]
     return sorted(filtrado, key=lambda x: x["timestamp"], reverse=True)
 
-# Parser avanzado y preciso de PDF basado en tus reglas de marcas, tiquets y X
+# Parser avanzado de PDF basado en tiquets y marcas
 def extraer_preguntas_de_pdf(pdf_file):
     reader = PdfReader(pdf_file)
     texto_completo = ""
@@ -91,7 +91,6 @@ def extraer_preguntas_de_pdf(pdf_file):
 
     texto_completo = re.sub(r'\r\n', '\n', texto_completo)
 
-    # Fraccionar por la numeración de preguntas (ej. "1.-", "2.-")
     bloques = re.split(r'\n(?=[0-9]{1,3}\.-\s)', texto_completo)
     if len(bloques) <= 1:
         bloques = re.split(r'(?=[0-9]{1,3}\.-\s)', texto_completo)
@@ -108,8 +107,6 @@ def extraer_preguntas_de_pdf(pdf_file):
             continue
             
         cuerpo_bloque = match_num.group(2)
-        
-        # Dividir el bloque por las alternativas A.-, B.-, C.-, D.-
         partes_alt = re.split(r'\b([A-D])\.-\s*', cuerpo_bloque)
         
         if len(partes_alt) < 3:
@@ -125,7 +122,6 @@ def extraer_preguntas_de_pdf(pdf_file):
         while i < len(partes_alt) - 1:
             letra = partes_alt[i].upper()
             texto_alt = partes_alt[i+1].strip()
-            
             texto_alt = re.sub(r'\s+[0-9]{1,3}\.-.*$', '', texto_alt)
             
             idx = ord(letra) - ord('A')
@@ -228,7 +224,6 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     respondidas_ok = sum(1 for k, v in resp_dict.items() if v.get("estado") == "correcta")
     respondidas_fail = sum(1 for k, v in resp_dict.items() if v.get("estado") in ["incorrecta", "omitida"])
     
-    # Cálculo del porcentaje considerando preguntas en blanco/omitidas como incorrectas
     puntaje_porcentaje = int((respondidas_ok / total_preguntas) * 100) if total_preguntas > 0 else 0
     
     # --- BARRA SUPERIOR Y CUADRÍCULA (ESQUINA SUPERIOR DERECHA) ---
@@ -262,33 +257,47 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     st.progress((idx_actual + 1) / total_preguntas)
     st.divider()
 
-    # --- MOSTRAR UNA PREGUNTA Y SUS ALTERNATIVAS ---
+    # --- MOSTRAR UNA PREGUNTA Y SUS ALTERNATIVAS SIN PRESELECCIÓN (EN BLANCO) ---
     q_actual = preguntas[idx_actual]
     st.markdown(f"#### {idx_actual + 1}.- {q_actual['pregunta']}")
     
-    estado_actual_q = resp_dict.get(idx_actual, {})
-    corregido = estado_actual_q.get("corregido", False)
-    seleccion_previa = estado_actual_q.get("elegida", None)
-    
-    opciones_textos = [f"{alt['letra']}.- {alt['texto']}" for alt in q_actual["alternativas"]]
-    
-    default_radio_idx = seleccion_previa if seleccion_previa is not None else 0
-    seleccion = st.radio(
-        "Seleccione su alternativa:",
-        options=range(len(opciones_textos)),
-        format_func=lambda x: opciones_textos[x],
-        index=default_radio_idx,
-        key=f"radio_q_{idx_actual}",
-        disabled=corregido
-    )
-
     if idx_actual not in resp_dict:
         resp_dict[idx_actual] = {"elegida": None, "estado": None, "corregido": False}
+    
+    estado_actual_q = resp_dict[idx_actual]
+    corregido = estado_actual_q.get("corregido", False)
+    seleccion_actual = estado_actual_q.get("elegida", None)
 
+    st.markdown("Seleccione su alternativa:")
+
+    # Renderizado seguro mediante botones de selección limpia (evita preselección automática de la alternativa A)
+    for i_alt, alt in enumerate(q_actual["alternativas"]):
+        btn_label = f"{alt['letra']}.- {alt['texto']}"
+        is_selected = (seleccion_actual == i_alt)
+        
+        # Color o estilo visual según selección o corrección
+        prefix = "🔘" if is_selected else "⚪"
+        if corregido:
+            if i_alt == q_actual.get("correcta"):
+                prefix = "✅"
+            elif is_selected and i_alt != q_actual.get("correcta"):
+                prefix = "❌"
+
+        if st.button(f"{prefix} {btn_label}", key=f"alt_btn_{idx_actual}_{i_alt}", disabled=corregido, use_container_width=True):
+            resp_dict[idx_actual]["elegida"] = i_alt
+            st.rerun()
+
+    if seleccion_actual is not None:
+        st.caption(f"Opción seleccionada actualmente: **Alternativa {q_actual['alternativas'][seleccion_actual]['letra']}**")
+    else:
+        st.caption("⚠️ Ninguna alternativa seleccionada (Pregunta en blanco).")
+
+    # Si la pregunta no tiene respuesta correcta detectada en el PDF
     if q_actual.get("correcta") is None:
         st.info("ℹ️ Esta pregunta no tiene una respuesta correcta marcada con tiquet en el documento original.")
         col_m1, col_m2 = st.columns([3, 1])
         with col_m1:
+            opciones_textos = [f"{alt['letra']}.- {alt['texto']}" for alt in q_actual["alternativas"]]
             alt_correcta_manual = st.selectbox("Selecciona la alternativa correcta:", options=range(len(opciones_textos)), format_func=lambda x: opciones_textos[x], key=f"man_corr_{idx_actual}")
         with col_m2:
             if st.button("Guardar Respuesta", key=f"btn_save_corr_{idx_actual}"):
@@ -302,19 +311,14 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
             st.success("¡Correcto! Respuesta acertada.")
         else:
             st.error("Incorrecto.")
-            
-        for i_alt, alt in enumerate(q_actual["alternativas"]):
-            if i_alt == idx_correcta:
-                st.markdown(f"✅ **{alt['letra']}.- {alt['texto']}** (Respuesta Correcta)")
-            elif i_alt == seleccion_previa and i_alt != idx_correcta:
-                st.markdown(f"❌ **{alt['letra']}.- {alt['texto']}** (Tu respuesta errónea)")
 
     st.write("")
     col_bot1, col_bot2, col_bot3 = st.columns([2, 4, 2])
 
     with col_bot1:
         if st.button("⬅️ Omitir", use_container_width=True):
-            resp_dict[idx_actual] = {"elegida": seleccion, "estado": "omitida", "corregido": True}
+            resp_dict[idx_actual]["estado"] = "omitida"
+            resp_dict[idx_actual]["corregido"] = True
             if idx_actual < total_preguntas - 1:
                 estudio["idx_actual"] += 1
                 st.rerun()
@@ -325,18 +329,18 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
         texto_boton = "Siguiente ➡️" if corregido else "Contestar / Corregir"
         if st.button(texto_boton, type="primary", use_container_width=True):
             if not corregido:
-                idx_correcta = q_actual.get("correcta")
-                if idx_correcta is None:
-                    st.warning("Por favor, asigna la alternativa correcta para esta pregunta antes de continuar.")
+                if seleccion_actual is None:
+                    st.warning("Por favor, selecciona una alternativa o presiona Omitir.")
                 else:
-                    es_correcta = (seleccion == idx_correcta)
-                    estado_str = "correcta" if es_correcta else "incorrecta"
-                    resp_dict[idx_actual] = {
-                        "elegida": seleccion,
-                        "estado": estado_str,
-                        "corregido": True
-                    }
-                    st.rerun()
+                    idx_correcta = q_actual.get("correcta")
+                    if idx_correcta is None:
+                        st.warning("Por favor, asigna la alternativa correcta para esta pregunta antes de continuar.")
+                    else:
+                        es_correcta = (seleccion_actual == idx_correcta)
+                        estado_str = "correcta" if es_correcta else "incorrecta"
+                        resp_dict[idx_actual]["estado"] = estado_str
+                        resp_dict[idx_actual]["corregido"] = True
+                        st.rerun()
             else:
                 if idx_actual < total_preguntas - 1:
                     estudio["idx_actual"] += 1
