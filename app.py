@@ -25,14 +25,37 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Directorio para almacenar las pruebas y el historial localmente
+# Directorios y archivos de almacenamiento local
 DATA_DIR = "data_bancos"
 HISTORY_FILE = "historial_resultados.json"
+USERS_FILE = "usuarios.json"
 
 if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
 
-# Funciones de almacenamiento y carga de bancos de preguntas
+# --- GESTIÓN DE USUARIOS Y AUTENTICACIÓN ---
+def cargar_usuarios():
+    if os.path.exists(USERS_FILE):
+        try:
+            with open(USERS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def guardar_usuarios(usuarios):
+    with open(USERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(usuarios, f, ensure_ascii=False, indent=4)
+
+# Inicializar sesión de usuario
+if "usuario_actual" not in st.session_state:
+    st.session_state.usuario_actual = None # Almacenará el email del usuario logueado
+if "vista" not in st.session_state:
+    st.session_state.vista = "home"
+if "modo_estudio_data" not in st.session_state:
+    st.session_state.modo_estudio_data = None
+
+# --- FUNCIONES DE BANCOS DE PREGUNTAS ---
 def guardar_banco(nombre_id, data):
     ruta = os.path.join(DATA_DIR, f"{nombre_id}.json")
     if os.path.exists(ruta):
@@ -72,7 +95,7 @@ def eliminar_banco(nombre_id):
     if os.path.exists(ruta):
         os.remove(ruta)
 
-# Funciones para el historial de resultados (últimos 20 días)
+# --- HISTORIAL DE RESULTADOS ---
 def guardar_resultado_historial(nombre_prueba, puntaje_pct, correctas, total):
     historial = []
     if os.path.exists(HISTORY_FILE):
@@ -83,6 +106,7 @@ def guardar_resultado_historial(nombre_prueba, puntaje_pct, correctas, total):
             historial = []
     
     nuevo_registro = {
+        "usuario": st.session_state.usuario_actual,
         "fecha": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "timestamp": datetime.now().timestamp(),
         "prueba": nombre_prueba,
@@ -105,10 +129,11 @@ def obtener_historial_reciente():
         return []
     
     limite_tiempo = datetime.now().timestamp() - (20 * 24 * 60 * 60)
-    filtrado = [h for h in historial if h.get("timestamp", 0) >= limite_tiempo]
+    # Filtrar por usuario actual
+    filtrado = [h for h in historial if h.get("timestamp", 0) >= limite_tiempo and h.get("usuario") == st.session_state.usuario_actual]
     return sorted(filtrado, key=lambda x: x["timestamp"], reverse=True)
 
-# Parser ultra preciso: asocia marcas reales (☑, X, etc.) directamente con su alternativa correspondiente
+# --- PARSER DE PDF ---
 def extraer_preguntas_de_pdf(pdf_file):
     reader = PdfReader(pdf_file)
     texto_completo = ""
@@ -126,8 +151,6 @@ def extraer_preguntas_de_pdf(pdf_file):
                 pass
 
     texto_completo = re.sub(r'\r\n', '\n', texto_completo)
-
-    # Dividir el documento por bloques de preguntas (ej. "1.-", "2.-", etc.)
     bloques = re.split(r'\n(?=[0-9]{1,3}\.-\s)', texto_completo)
     if len(bloques) <= 1:
         bloques = re.split(r'(?=[0-9]{1,3}\.-\s)', texto_completo)
@@ -144,17 +167,13 @@ def extraer_preguntas_de_pdf(pdf_file):
             continue
             
         cuerpo_bloque = match_num.group(2)
-        
-        # Extraer líneas del bloque
         lineas = [l.strip() for l in cuerpo_bloque.split('\n') if l.strip()]
         
         enunciado_lineas = []
         lineas_alts = []
-        
-        # Identificar dónde empiezan las alternativas (A.-, B.-, C.-, D.- o marcas flotantes asociadas)
         en_alternativas = False
+        
         for linea in lineas:
-            # Si la línea empieza con una alternativa o marca de alternativa
             if re.match(r'^([☑X✔✓]?\s*[A-Da-d])[\.\-\)]', linea) or re.match(r'^[☑X✔✓]\s*[\-\.]?', linea) or en_alternativas:
                 en_alternativas = True
                 lineas_alts.append(linea)
@@ -167,24 +186,12 @@ def extraer_preguntas_de_pdf(pdf_file):
         enunciado = " ".join(enunciado_lineas).strip()
         enunciado = re.sub(r'Materia\s*:.*?Cantidad de Preguntas\s*:\s*[0-9]+', '', enunciado).strip()
 
-        # Consolidar las alternativas detectadas y asociar la marca correcta
         alternativas = []
         correcta_idx = None
-        
-        # Agrupar texto de alternativas por letra (A, B, C, D)
-        alt_actual_letra = None
-        alt_actual_texto = []
-        alt_actual_marcada = False
-        
-        # Estructura temporal para almacenar A, B, C, D
-        mapa_alts = {} # {'A': {'texto': '...', 'marcada': bool}, ...}
-        
         texto_completo_alts = "\n".join(lineas_alts)
-        
-        # Buscar patrones tipo A.-, B.-, C.-, D.- dentro del bloque de alternativas
-        # Incluso si la marca ☑ o X está antes o encima
         fragmentos = re.split(r'(?=[☑X✔✓]?\s*[A-Da-d][\.\-\)])', texto_completo_alts)
         
+        mapa_alts = {}
         for frag in fragmentos:
             frag = frag.strip()
             if not frag:
@@ -196,35 +203,24 @@ def extraer_preguntas_de_pdf(pdf_file):
                 letra = match_alt.group(2).upper()
                 texto = match_alt.group(3).strip()
                 
-                # Verificar si tiene marca de respuesta correcta
                 es_marcada = bool(marca_simbolo) or any(s in frag[:10] for s in ['☑', 'X', '✔', '✓', '●', '[x]', '(X)'])
-                
-                # Limpiar símbolos gráficos del texto
                 for s in ['☑', 'X', '✔', '✓', '●', '(•)', '[x]', '(X)', '•', '(*)', '❌', '×']:
                     texto = texto.replace(s, "")
                 texto = " ".join(texto.split()).strip()
                 
-                mapa_alts[letra] = {
-                    "texto": texto,
-                    "marcada": es_marcada
-                }
+                mapa_alts[letra] = {"texto": texto, "marcada": es_marcada}
             else:
-                # Si es una línea de continuación de la última alternativa analizada
                 if mapa_alts:
                     ultima_letra = list(mapa_alts.keys())[-1]
-                    # Revisar si trae una marca flotante (como ☑ o X suelta en línea previa/posterior)
                     es_marcada_flotante = any(s in frag for s in ['☑', 'X', '✔', '✓', '●', '[x]', '(X)'])
-                    
                     for s in ['☑', 'X', '✔', '✓', '●', '(•)', '[x]', '(X)', '•', '(*)', '❌', '×']:
                         frag = frag.replace(s, "")
                     frag = " ".join(frag.split()).strip()
-                    
                     if frag:
                         mapa_alts[ultima_letra]["texto"] += " " + frag
                     if es_marcada_flotante:
                         mapa_alts[ultima_letra]["marcada"] = True
 
-        # Construir la lista final de alternativas ordenadas (A, B, C, D)
         letras_ordenadas = ['A', 'B', 'C', 'D']
         for idx_a, l in enumerate(letras_ordenadas):
             if l in mapa_alts:
@@ -237,7 +233,6 @@ def extraer_preguntas_de_pdf(pdf_file):
                     "marcada": info["marcada"]
                 })
 
-        # Si no se encontró ninguna marca por análisis directo, aplicamos respaldo secuencial o por defecto
         if correcta_idx is None and alternativas:
             correcta_idx = 0
 
@@ -250,17 +245,68 @@ def extraer_preguntas_de_pdf(pdf_file):
 
     return preguntas_parsed
 
-# --- GESTIÓN DE ESTADOS EN STREAMLIT ---
-if "vista" not in st.session_state:
-    st.session_state.vista = "home"
-if "prueba_activa" not in st.session_state:
-    st.session_state.prueba_activa = None
-if "modo_estudio_data" not in st.session_state:
-    st.session_state.modo_estudio_data = None
+
+# ==================== CONTROL DE ACCESO (LOGIN / REGISTRO) ====================
+if st.session_state.usuario_actual is None:
+    st.title("🔐 Acceso a la Aplicación de Estudio")
+    st.markdown("Por favor, inicia sesión o regístrate con tu correo y contraseña para continuar.")
+    
+    tab_login, tab_registro = st.tabs(["Iniciar Sesión", "Registrarse"])
+    
+    usuarios_db = cargar_usuarios()
+    
+    with tab_login:
+        email_ingreso = st.text_input("Correo electrónico:", key="login_email")
+        pass_ingreso = st.text_input("Contraseña:", type="password", key="login_pass")
+        
+        if st.button("Entrar", type="primary"):
+            email_ingreso = email_ingreso.strip().lower()
+            if email_ingreso in usuarios_db and usuarios_db[email_ingreso]["password"] == pass_ingreso:
+                st.session_state.usuario_actual = email_ingreso
+                st.success("¡Acceso exitoso!")
+                st.rerun()
+            else:
+                st.error("Correo o contraseña incorrectos.")
+                
+    with tab_registro:
+        reg_nombre = st.text_input("Nombre de usuario:", key="reg_name")
+        reg_email = st.text_input("Correo electrónico:", key="reg_email")
+        reg_pass = st.text_input("Contraseña:", type="password", key="reg_pass")
+        
+        if st.button("Crear Cuenta"):
+            reg_email = reg_email.strip().lower()
+            if not reg_email or not reg_pass or not reg_nombre:
+                st.warning("Completa todos los campos.")
+            elif reg_email in usuarios_db:
+                st.error("Este correo ya está registrado.")
+            else:
+                usuarios_db[reg_email] = {
+                    "nombre": reg_nombre,
+                    "email": reg_email,
+                    "password": reg_pass
+                }
+                guardar_usuarios(usuarios_db)
+                st.session_state.usuario_actual = reg_email
+                st.success("¡Cuenta creada con éxito!")
+                st.rerun()
+    st.stop() # Detener la ejecución aquí si no hay usuario autenticado
+
+
+# ==================== INTERFAZ PRINCIPAL (USUARIO AUTENTICADO) ====================
+usuarios_db = cargar_usuarios()
+datos_usuario = usuarios_db.get(st.session_state.usuario_actual, {"nombre": "Administrador", "email": st.session_state.usuario_actual, "password": ""})
 
 # ==================== BARRA LATERAL / MENÚ DE HERRAMIENTAS ====================
 with st.sidebar:
     st.markdown("### 🛠️ Menú de Herramientas")
+    
+    # Parte superior de la barra: Botón con el nombre del usuario para entrar al perfil
+    if st.button(f"👤 Perfil: {datos_usuario['nombre']}", use_container_width=True):
+        st.session_state.vista = "perfil"
+        st.rerun()
+        
+    st.divider()
+    
     if st.button("🏠 Volver al Inicio / Pruebas", use_container_width=True):
         st.session_state.vista = "home"
         st.session_state.prueba_activa = None
@@ -272,15 +318,68 @@ with st.sidebar:
         
     st.divider()
     st.markdown("### ✈️ Panel de Control")
-    st.info("Sube tus bancos en PDF. El sistema detecta con absoluta precisión las respuestas correctas marcadas.")
+    st.info("Solo se evalúa con el documento cargado o configuraciones de administrador.")
+
+    # Botón para cerrar sesión en la parte inferior de la barra lateral
+    st.write("")
+    st.write("")
+    if st.button("🚪 Cerrar Sesión", type="secondary", use_container_width=True):
+        st.session_state.usuario_actual = None
+        st.session_state.vista = "home"
+        st.session_state.modo_estudio_data = None
+        st.rerun()
+
+
+# ==================== VISTA: PERFIL DE USUARIO ====================
+if st.session_state.vista == "perfil":
+    st.title("👤 Configuración de Perfil y Cuenta")
+    st.markdown("Aquí puedes visualizar y editar tu información de usuario, correo y contraseña.")
+    
+    with st.form("form_perfil"):
+        nuevo_nombre = st.text_input("Nombre de usuario:", value=datos_usuario["nombre"])
+        nuevo_email = st.text_input("Correo electrónico:", value=datos_usuario["email"])
+        nueva_pass = st.text_input("Contraseña:", value=datos_usuario["password"], type="password")
+        
+        btn_guardar_perfil = st.form_submit_button("Guardar Cambios", type="primary")
+        
+        if btn_guardar_perfil:
+            email_viejo = st.session_state.usuario_actual
+            nuevo_email_limpio = nuevo_email.strip().lower()
+            
+            # Actualizar base de datos de usuarios
+            if nuevo_email_limpio != email_viejo:
+                if nuevo_email_limpio in usuarios_db:
+                    st.error("El nuevo correo ya está registrado por otra cuenta.")
+                else:
+                    usuarios_db[nuevo_email_limpio] = {
+                        "nombre": nuevo_nombre,
+                        "email": nuevo_email_limpio,
+                        "password": nueva_pass
+                    }
+                    del usuarios_db[email_viejo]
+                    st.session_state.usuario_actual = nuevo_email_limpio
+                    guardar_usuarios(usuarios_db)
+                    st.success("¡Perfil actualizado con éxito!")
+                    st.rerun()
+            else:
+                usuarios_db[email_viejo]["nombre"] = nuevo_nombre
+                usuarios_db[email_viejo]["password"] = nueva_pass
+                guardar_usuarios(usuarios_db)
+                st.success("¡Perfil actualizado con éxito!")
+                st.rerun()
+                
+    if st.button("⬅️ Volver al Inicio"):
+        st.session_state.vista = "home"
+        st.rerun()
+
 
 # ==================== VISTA: HISTORIAL ====================
-if st.session_state.vista == "historial":
+elif st.session_state.vista == "historial":
     st.title("📊 Historial de Rendimiento (Últimos 20 días)")
     historial = obtener_historial_reciente()
     
     if not historial:
-        st.warning("No hay registros de exámenes realizados en los últimos 20 días.")
+        st.warning("No hay registros de exámenes realizados en los últimos 20 días para este usuario.")
     else:
         df_hist = pd.DataFrame(historial)
         promedio_general = df_hist["puntaje"].mean()
@@ -299,6 +398,7 @@ if st.session_state.vista == "historial":
     if st.button("⬅️ Regresar al Inicio"):
         st.session_state.vista = "home"
         st.rerun()
+
 
 # ==================== VISTA: MODO ESTUDIO (UNA PREGUNTA POR PÁGINA) ====================
 elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
@@ -382,9 +482,9 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     else:
         st.caption("⚠️ Ninguna alternativa seleccionada (Pregunta en blanco).")
 
-    # Selector manual de respaldo solo si la pregunta no tiene respuesta detectada
+    # Selector manual de respaldo (función de administrador / usuario)
     if q_actual.get("correcta") is None:
-        st.warning("⚠️ Esta pregunta NO tiene una respuesta correcta detectada. Asígnala aquí y se guardará permanentemente:")
+        st.warning("⚠️ Esta pregunta NO tiene una respuesta correcta detectada. Como administrador/usuario, asígnala aquí y se guardará permanentemente:")
         col_m1, col_m2 = st.columns([3, 1])
         with col_m1:
             opciones_textos = [f"{alt['letra']}.- {alt['texto']}" for alt in q_actual["alternativas"]]
@@ -447,20 +547,21 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
                         st.session_state.modo_estudio_data = None
                         st.rerun()
 
+
 # ==================== VISTA: HOME (PÁGINA PRINCIPAL) ====================
 else:
     st.title("📚 Banco de Preguntas y Simulador de Estudio")
-    st.markdown("Carga tus documentos PDF con preguntas y alternativas para comenzar a estudiar de forma interactiva.")
+    st.markdown(f"Bienvenido, **{datos_usuario['nombre']}**. Carga documentos PDF oficiales o estudia de tus bancos guardados.")
     
     st.divider()
 
     st.subheader("➕ Crear Nueva Prueba desde PDF")
     uploaded_file = st.file_uploader("Sube tu archivo PDF con preguntas", type=["pdf"])
-    nombre_nueva_prueba = st.text_input("Nombre de la prueba:", placeholder="Ej. Reglamentación PTLA Avión")
+    nombre_nueva_prueba = st.text_input("Nombre de la prueba:", placeholder="Ej. Fisiología PTLA Avión")
     
     if st.button("Procesar y Crear Banco de Preguntas", type="primary"):
         if uploaded_file and nombre_nueva_prueba:
-            with st.spinner("Leyendo PDF y asociando respuestas correctas..."):
+            with st.spinner("Leyendo PDF y extrayendo respuestas del documento..."):
                 preguntas_extraidas = extraer_preguntas_de_pdf(uploaded_file)
                 if preguntas_extraidas:
                     id_limpio = re.sub(r'[^a-zA-Z0-9_\-]', '_', nombre_nueva_prueba)
