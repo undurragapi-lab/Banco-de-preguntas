@@ -14,6 +14,18 @@ st.set_page_config(
     layout="wide"
 )
 
+# Inyección de estilos CSS para alinear los botones de alternativas estrictamente a la izquierda
+st.markdown("""
+<style>
+    /* Forzar alineación a la izquierda en los botones de opciones */
+    div.stButton > button {
+        text-align: left !important;
+        justify-content: flex-start !important;
+        padding-left: 20px !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # Directorio para almacenar las pruebas y el historial localmente
 DATA_DIR = "data_bancos"
 HISTORY_FILE = "historial_resultados.json"
@@ -257,7 +269,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     st.progress((idx_actual + 1) / total_preguntas)
     st.divider()
 
-    # --- MOSTRAR UNA PREGUNTA Y SUS ALTERNATIVAS SIN PRESELECCIÓN (EN BLANCO) ---
+    # --- MOSTRAR UNA PREGUNTA Y SUS ALTERNATIVAS ALINEADAS A LA IZQUIERDA ---
     q_actual = preguntas[idx_actual]
     st.markdown(f"#### {idx_actual + 1}.- {q_actual['pregunta']}")
     
@@ -270,12 +282,10 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
 
     st.markdown("Seleccione su alternativa:")
 
-    # Renderizado seguro mediante botones de selección limpia (evita preselección automática de la alternativa A)
     for i_alt, alt in enumerate(q_actual["alternativas"]):
         btn_label = f"{alt['letra']}.- {alt['texto']}"
         is_selected = (seleccion_actual == i_alt)
         
-        # Color o estilo visual según selección o corrección
         prefix = "🔘" if is_selected else "⚪"
         if corregido:
             if i_alt == q_actual.get("correcta"):
@@ -292,9 +302,9 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     else:
         st.caption("⚠️ Ninguna alternativa seleccionada (Pregunta en blanco).")
 
-    # Si la pregunta no tiene respuesta correcta detectada en el PDF
+    # Selector manual solo si la pregunta no tiene respuesta en el PDF original
     if q_actual.get("correcta") is None:
-        st.info("ℹ️ Esta pregunta no tiene una respuesta correcta marcada con tiquet en el documento original.")
+        st.warning("⚠️ Esta pregunta NO tiene una respuesta correcta marcada en el documento original. Por favor, asígnela para poder corregirla:")
         col_m1, col_m2 = st.columns([3, 1])
         with col_m1:
             opciones_textos = [f"{alt['letra']}.- {alt['texto']}" for alt in q_actual["alternativas"]]
