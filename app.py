@@ -2,10 +2,10 @@ import os
 import re
 import json
 import random
-from datetime import datetime, timedelta
+from datetime import datetime
 import streamlit as st
 import pandas as pd
-from pypdf import PdfReader
+import pdfplumber
 
 # Configuración de la página
 st.set_page_config(
@@ -18,6 +18,7 @@ st.set_page_config(
 DATA_DIR = "data_bancos"
 HISTORY_FILE = "historial_resultados.json"
 USERS_FILE = "usuarios.json"
+SESSION_FILE = "sesion_activa.json"
 
 if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
@@ -36,9 +37,29 @@ def guardar_usuarios(usuarios):
     with open(USERS_FILE, "w", encoding="utf-8") as f:
         json.dump(usuarios, f, ensure_ascii=False, indent=4)
 
-# Persistencia de sesión al refrescar la página usando query_params
+def cargar_sesion_persistida():
+    if os.path.exists(SESSION_FILE):
+        try:
+            with open(SESSION_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data.get("usuario")
+        except:
+            return None
+    return None
+
+def guardar_sesion_persistida(email):
+    with open(SESSION_FILE, "w", encoding="utf-8") as f:
+        json.dump({"usuario": email}, f, ensure_ascii=False, indent=4)
+
+def eliminar_sesion_persistida():
+    if os.path.exists(SESSION_FILE):
+        try:
+            os.remove(SESSION_FILE)
+        except:
+            pass
+
 if "usuario_actual" not in st.session_state:
-    saved_user = st.query_params.get("logged_in_user")
+    saved_user = cargar_sesion_persistida()
     usuarios_db_temp = cargar_usuarios()
     if saved_user and saved_user in usuarios_db_temp:
         st.session_state.usuario_actual = saved_user
@@ -127,33 +148,50 @@ def obtener_historial_reciente():
     filtrado = [h for h in historial if h.get("timestamp", 0) >= limite_tiempo and h.get("usuario") == st.session_state.usuario_actual]
     return sorted(filtrado, key=lambda x: x["timestamp"], reverse=True)
 
-# --- PARSER AJUSTADO: DETECCIÓN DE ☑ Y X EN PDF ---
+# --- PARSER ULTRA-AVANZADO 100% GRATUITO Y LOCAL (`pdfplumber`) ---
 def extraer_preguntas_de_pdf(pdf_file):
-    reader = PdfReader(pdf_file)
     texto_completo = ""
+    hojas_texto_estilo = []
     
-    for pagina in reader.pages:
-        t = pagina.extract_text()
-        if t:
-            texto_completo += t + "\n"
+    # Abrir mediante pdfplumber para análisis espacial, columnas y fuentes tipográficas
+    with pdfplumber.open(pdf_file) as pdf:
+        total_paginas = len(pdf.pages)
+        for idx, pagina in enumerate(pdf.pages):
+            # Extraer texto normal respetando flujo de columnas
+            t = pagina.extract_text(layout=False) or ""
+            texto_completo += t + f"\n--- PAGINA {idx+1} ---\n"
             
-        if "/Annots" in pagina:
+            # Extraer palabras con estilos y fuentes tipográficas (para detectar negritas)
             try:
-                for annot in pagina["/Annots"]:
-                    obj = annot.get_object()
-                    if "/Contents" in obj:
-                        texto_completo += " [MARCA_ANNOT: " + str(obj["/Contents"]) + "] \n"
+                palabras = pagina.extract_words(extra_attrs=["fontname", "size"])
+                hojas_texto_estilo.append(palabras)
             except:
-                pass
+                hojas_texto_estilo.append([])
 
-    texto_completo = re.sub(r'\r\n', '\n', texto_completo)
+    # 1. BÚSQUEDA DE HOJAS/CLAVES DE RESPUESTA AL FINAL DEL DOCUMENTO
+    # Patrones comunes: "1. A", "1-A", "Pregunta 1: C", "1) B" en secciones finales
+    mapa_claves_finales = {}
+    lineas_doc = texto_completo.split('\n')
+    en_seccion_claves = False
     
+    for linea in lineas_doc:
+        linea_lower = linea.lower()
+        if any(kw in linea_lower for kw in ["clave", "respuestas correctas", "pauta de correccion", "answer key"]):
+            en_seccion_claves = True
+        
+        if en_seccion_claves:
+            # Buscar patrones tipo "1-A", "1. A", "1) A"
+            matches_claves = re.findall(r'\b([0-9]{1,3})[\.\-\)]\s*([A-Da-d])\b', linea)
+            for num_str, letra in matches_claves:
+                mapa_claves_finales[int(num_str)] = letra.upper()
+
+    # 2. PROCESAMIENTO Y SEGMENTACIÓN DE PREGUNTAS
     bloques = re.split(r'\n(?=[0-9]{1,3}\.-\s)', texto_completo)
     if len(bloques) <= 1:
         bloques = re.split(r'(?=[0-9]{1,3}\.-\s)', texto_completo)
 
     preguntas_parsed = []
-    patron_alt_inicio = re.compile(r'^[☑☒X✔✓xVv\[\]\(\)\*\-\s]*([A-Da-dXx])[\.\-\)]\s*', re.IGNORECASE)
+    patron_alt_inicio = re.compile(r'^[☑☒X✔✓xVv\[\]\(\)\*\-\s]*([A-Da-d])[\.\-\)]\s*', re.IGNORECASE)
     
     for bloque in bloques:
         bloque = bloque.strip()
@@ -164,6 +202,7 @@ def extraer_preguntas_de_pdf(pdf_file):
         if not match_num:
             continue
             
+        num_pregunta = int(match_num.group(1))
         cuerpo_bloque = match_num.group(2)
         lineas = [l.strip() for l in cuerpo_bloque.split('\n') if l.strip()]
         
@@ -190,9 +229,8 @@ def extraer_preguntas_de_pdf(pdf_file):
         
         for linea in alternativas_crudas:
             match_alt = patron_alt_inicio.match(linea)
-            match_directo_marcado = re.match(r'^[☑☒X✔✓]\s*[\-\.]?\s*([A-Da-d])?[\.\-\)]?\s*(.*)', linea)
             
-            if match_alt or match_directo_marcado:
+            if match_alt or re.match(r'^[☑☒X✔✓]\s*[\-\.]?\s*([A-Da-d])?[\.\-\)]?\s*(.*)', linea):
                 if alt_actual_letra:
                     mapa_alts[alt_actual_letra] = {
                         "texto": " ".join(alt_actual_texto).strip(),
@@ -201,18 +239,24 @@ def extraer_preguntas_de_pdf(pdf_file):
                 
                 if match_alt:
                     letra_capturada = match_alt.group(1).upper()
-                    if letra_capturada not in ['A', 'B', 'C', 'D']:
-                        letra_capturada = None
-                    alt_actual_letra = letra_capturada
+                    alt_actual_letra = letra_capturada if letra_capturada in ['A', 'B', 'C', 'D'] else None
                 else:
                     alt_actual_letra = None
                 
+                # Detección de símbolos explícitos de respuesta correcta
                 es_marcada = any(s in linea for s in ['☑', '☒', 'X', '✔', '✓', 'x', '[x]', '(X)', '[X]', 'V', '*'])
                 
+                # Detección tipográfica de Negrita (Bold) gratuita a nivel de fuente
+                if not es_marcada and hojas_texto_estilo:
+                    for pagina_words in hojas_texto_estilo:
+                        for w in pagina_words:
+                            if w["text"] in linea and any(b_kw in w.get("fontname", "").lower() for b_kw in ["bold", "negrita", "black", "bd"]):
+                                es_marcada = True
+                                break
+
                 if not alt_actual_letra:
                     existentes = list(mapa_alts.keys())
-                    siguientes = ['A', 'B', 'C', 'D']
-                    for sig in siguientes:
+                    for sig in ['A', 'B', 'C', 'D']:
                         if sig not in existentes:
                             alt_actual_letra = sig
                             break
@@ -251,12 +295,21 @@ def extraer_preguntas_de_pdf(pdf_file):
             if l in mapa_alts and mapa_alts[l]["texto"]:
                 info = mapa_alts[l]
                 if info["marcada"]:
-                    correcta_idx = len(alternativas)
+                    correcta_idx = idx_a
                 alternativas.append({
                     "letra": l,
                     "texto": info["texto"],
                     "marcada": info["marcada"]
                 })
+
+        # Si no se halló marca directa pero existe clave al final del documento para esta pregunta
+        if correcta_idx is None and num_pregunta in mapa_claves_finales:
+            letra_clave = mapa_claves_finales[num_pregunta]
+            for idx_a, alt in enumerate(alternativas):
+                if alt["letra"] == letra_clave:
+                    correcta_idx = idx_a
+                    alt["marcada"] = True
+                    break
 
         if enunciado and len(alternativas) >= 2:
             preguntas_parsed.append({
@@ -283,7 +336,7 @@ if st.session_state.usuario_actual is None:
             email_ingreso = email_ingreso.strip().lower()
             if email_ingreso in usuarios_db and usuarios_db[email_ingreso]["password"] == pass_ingreso:
                 st.session_state.usuario_actual = email_ingreso
-                st.query_params["logged_in_user"] = email_ingreso  # Guardar sesión en query params para refrescos
+                guardar_sesion_persistida(email_ingreso)
                 st.success("¡Acceso exitoso!")
                 st.rerun()
             else:
@@ -308,7 +361,7 @@ if st.session_state.usuario_actual is None:
                 }
                 guardar_usuarios(usuarios_db)
                 st.session_state.usuario_actual = reg_email
-                st.query_params["logged_in_user"] = reg_email  # Guardar sesión en query params para refrescos
+                guardar_sesion_persistida(reg_email)
                 st.success("¡Cuenta creada con éxito!")
                 st.rerun()
     st.stop()
@@ -335,14 +388,13 @@ with st.sidebar:
         
     st.divider()
     st.markdown("### ✈️ Panel de Control")
-    st.info("Respuestas obtenidas exclusivamente del documento cargado o asignación de administrador.")
+    st.info("Motor Open Source avanzado con detección de negritas y claves finales.")
 
     st.write("")
     st.write("")
     if st.button("🚪 Cerrar Sesión", type="secondary", use_container_width=True):
         st.session_state.usuario_actual = None
-        if "logged_in_user" in st.query_params:
-            del st.query_params["logged_in_user"]  # Limpiar la persistencia al cerrar sesión
+        eliminar_sesion_persistida()
         st.session_state.vista = "home"
         st.session_state.modo_estudio_data = None
         st.rerun()
@@ -365,7 +417,7 @@ if st.session_state.vista == "perfil":
                     usuarios_db[nuevo_email_limpio] = {"nombre": nuevo_nombre, "email": nuevo_email_limpio, "password": nueva_pass}
                     del usuarios_db[email_viejo]
                     st.session_state.usuario_actual = nuevo_email_limpio
-                    st.query_params["logged_in_user"] = nuevo_email_limpio
+                    guardar_sesion_persistida(nuevo_email_limpio)
                     guardar_usuarios(usuarios_db)
                     st.success("¡Perfil actualizado!")
                     st.rerun()
@@ -471,7 +523,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
             resp_dict[idx_actual]["elegida"] = None
 
     if q_actual.get("correcta") is None:
-        st.warning("⚠️ Esta pregunta NO tiene respuesta correcta detectada automáticamente. Como administrador, asígnala aquí para guardarla permanentemente:")
+        st.warning("⚠️ Esta pregunta NO tiene respuesta correcta detectada automáticamente. Asígnala aquí para guardarla permanentemente:")
         col_m1, col_m2 = st.columns([3, 1])
         with col_m1:
             opciones_textos_manual = [f"{alt['letra']}.- {alt['texto']}" for alt in q_actual["alternativas"]]
@@ -553,7 +605,7 @@ else:
     
     if st.button("Procesar y Crear Banco de Preguntas", type="primary"):
         if uploaded_file and nombre_nueva_prueba:
-            with st.spinner("Leyendo PDF y marcas de respuestas..."):
+            with st.spinner("Analizando diseño, negritas y claves del PDF de forma gratuita..."):
                 preguntas_extraidas = extraer_preguntas_de_pdf(uploaded_file)
                 if preguntas_extraidas:
                     id_limpio = re.sub(r'[^a-zA-Z0-9_\-]', '_', nombre_nueva_prueba)
@@ -604,7 +656,7 @@ else:
                     }
                     st.session_state.vista = "estudio"
                     st.rerun()
-                if st.button("🗑️ Eliminar", key=f"btn_del_{b_id}", use_container_width=True):
+                if st.button("🗑 Eliminar", key=f"btn_del_{b_id}", use_container_width=True):
                     eliminar_banco(b_id)
                     st.rerun()
             st.divider()
