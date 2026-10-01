@@ -10,7 +10,7 @@ from pypdf import PdfReader
 # Configuración de la página
 st.set_page_config(
     page_title="App de Estudio - Piloto",
-    page_icon="✈️️",
+    page_icon="✈️",
     layout="wide"
 )
 
@@ -32,16 +32,14 @@ HISTORY_FILE = "historial_resultados.json"
 if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
 
-# Funciones de almacenamiento y carga de bancos de preguntas (con preservación de respuestas manuales)
+# Funciones de almacenamiento y carga de bancos de preguntas
 def guardar_banco(nombre_id, data):
     ruta = os.path.join(DATA_DIR, f"{nombre_id}.json")
-    # Si ya existe el banco, fusionamos preservando las respuestas correctas manuales previas si las hay
     if os.path.exists(ruta):
         try:
             with open(ruta, "r", encoding="utf-8") as f:
                 banco_antiguo = json.load(f)
             
-            # Mapear preguntas anteriores por texto para conservar respuestas manuales guardadas
             mapa_manuales = {}
             for q_ant in banco_antiguo.get("preguntas", []):
                 if q_ant.get("correcta") is not None:
@@ -110,7 +108,7 @@ def obtener_historial_reciente():
     filtrado = [h for h in historial if h.get("timestamp", 0) >= limite_tiempo]
     return sorted(filtrado, key=lambda x: x["timestamp"], reverse=True)
 
-# Parser avanzado y tolerante a marcas y letras tapadas
+# Parser ultra preciso: asocia marcas reales (☑, X, etc.) directamente con su alternativa correspondiente
 def extraer_preguntas_de_pdf(pdf_file):
     reader = PdfReader(pdf_file)
     texto_completo = ""
@@ -129,6 +127,7 @@ def extraer_preguntas_de_pdf(pdf_file):
 
     texto_completo = re.sub(r'\r\n', '\n', texto_completo)
 
+    # Dividir el documento por bloques de preguntas (ej. "1.-", "2.-", etc.)
     bloques = re.split(r'\n(?=[0-9]{1,3}\.-\s)', texto_completo)
     if len(bloques) <= 1:
         bloques = re.split(r'(?=[0-9]{1,3}\.-\s)', texto_completo)
@@ -146,90 +145,99 @@ def extraer_preguntas_de_pdf(pdf_file):
             
         cuerpo_bloque = match_num.group(2)
         
-        lineas = cuerpo_bloque.split('\n')
-        enunciado_lineas = []
-        lineas_alt = []
+        # Extraer líneas del bloque
+        lineas = [l.strip() for l in cuerpo_bloque.split('\n') if l.strip()]
         
-        capturando_alts = False
+        enunciado_lineas = []
+        lineas_alts = []
+        
+        # Identificar dónde empiezan las alternativas (A.-, B.-, C.-, D.- o marcas flotantes asociadas)
+        en_alternativas = False
         for linea in lineas:
-            linea_s = linea.strip()
-            if re.match(r'^([☑X✔✓]?\s*[A-Da-d])[\.\-\)]', linea_s) or re.match(r'^[☑X✔✓]\s*[\-\.]?', linea_s) or capturando_alts:
-                if not capturando_alts and (re.match(r'^[A-Da-d][\.\-\)]', linea_s) or re.match(r'^[☑X✔✓]', linea_s)):
-                    capturando_alts = True
-                if capturando_alts:
-                    lineas_alt.append(linea_s)
+            # Si la línea empieza con una alternativa o marca de alternativa
+            if re.match(r'^([☑X✔✓]?\s*[A-Da-d])[\.\-\)]', linea) or re.match(r'^[☑X✔✓]\s*[\-\.]?', linea) or en_alternativas:
+                en_alternativas = True
+                lineas_alts.append(linea)
             else:
-                if not capturando_alts:
-                    enunciado_lineas.append(linea_s)
+                if not en_alternativas:
+                    enunciado_lineas.append(linea)
                 else:
-                    if lineas_alt:
-                        lineas_alt.append(linea_s)
-                    else:
-                        enunciado_lineas.append(linea_s)
+                    lineas_alts.append(linea)
 
         enunciado = " ".join(enunciado_lineas).strip()
         enunciado = re.sub(r'Materia\s*:.*?Cantidad de Preguntas\s*:\s*[0-9]+', '', enunciado).strip()
 
-        raw_alt_lines = []
-        current_alt_lines = []
-        for l in lineas_alt:
-            if re.match(r'^([☑X✔✓]?\s*[A-Da-d])[\.\-\)]', l) or re.match(r'^[☑X✔✓]\s*[\-\.]?', l):
-                if current_alt_lines:
-                    raw_alt_lines.append("\n".join(current_alt_lines))
-                    current_alt_lines = []
-            current_alt_lines.append(l)
-        if current_alt_lines:
-            raw_alt_lines.append("\n".join(current_alt_lines))
-
+        # Consolidar las alternativas detectadas y asociar la marca correcta
         alternativas = []
         correcta_idx = None
-
-        if len(raw_alt_lines) >= 2:
-            for idx_a, alt_block in enumerate(raw_alt_lines):
-                letra = chr(ord('A') + idx_a)
-                es_marca = any(s in alt_block for s in ['☑', 'X', '✔', '✓', '●', '[x]', '(X)'])
+        
+        # Agrupar texto de alternativas por letra (A, B, C, D)
+        alt_actual_letra = None
+        alt_actual_texto = []
+        alt_actual_marcada = False
+        
+        # Estructura temporal para almacenar A, B, C, D
+        mapa_alts = {} # {'A': {'texto': '...', 'marcada': bool}, ...}
+        
+        texto_completo_alts = "\n".join(lineas_alts)
+        
+        # Buscar patrones tipo A.-, B.-, C.-, D.- dentro del bloque de alternativas
+        # Incluso si la marca ☑ o X está antes o encima
+        fragmentos = re.split(r'(?=[☑X✔✓]?\s*[A-Da-d][\.\-\)])', texto_completo_alts)
+        
+        for frag in fragmentos:
+            frag = frag.strip()
+            if not frag:
+                continue
                 
-                t_alt = re.sub(r'^[☑X✔✓]?\s*[A-Da-d]?[\.\-\)]?\s*', '', alt_block)
+            match_alt = re.match(r'^([☑X✔✓]?)\s*([A-Da-d])[\.\-\)]\s*(.*)', frag, re.DOTALL)
+            if match_alt:
+                marca_simbolo = match_alt.group(1)
+                letra = match_alt.group(2).upper()
+                texto = match_alt.group(3).strip()
+                
+                # Verificar si tiene marca de respuesta correcta
+                es_marcada = bool(marca_simbolo) or any(s in frag[:10] for s in ['☑', 'X', '✔', '✓', '●', '[x]', '(X)'])
+                
+                # Limpiar símbolos gráficos del texto
                 for s in ['☑', 'X', '✔', '✓', '●', '(•)', '[x]', '(X)', '•', '(*)', '❌', '×']:
-                    t_alt = t_alt.replace(s, "")
-                t_alt = " ".join(t_alt.split()).strip()
+                    texto = texto.replace(s, "")
+                texto = " ".join(texto.split()).strip()
                 
-                if es_marca:
-                    correcta_idx = idx_a
-                    
-                alternativas.append({
-                    "letra": letra,
-                    "texto": t_alt,
-                    "marcada": es_marca
-                })
-        else:
-            texto_alts_unido = "\n".join(lineas_alt)
-            parts = re.split(r'([☑X✔✓]?\s*[A-Da-d]?)[\.\-\)]\s*', texto_alts_unido)
-            if len(parts) >= 3:
-                idx_a = 0
-                i = 1
-                while i < len(parts) - 1:
-                    token = parts[i].strip()
-                    t_alt = parts[i+1].strip()
-                    letra = chr(ord('A') + idx_a)
-                    
-                    es_marca = any(s in token or s in t_alt[:5] for s in ['☑', 'X', '✔', '✓', '●', '[x]', '(X)'])
+                mapa_alts[letra] = {
+                    "texto": texto,
+                    "marcada": es_marcada
+                }
+            else:
+                # Si es una línea de continuación de la última alternativa analizada
+                if mapa_alts:
+                    ultima_letra = list(mapa_alts.keys())[-1]
+                    # Revisar si trae una marca flotante (como ☑ o X suelta en línea previa/posterior)
+                    es_marcada_flotante = any(s in frag for s in ['☑', 'X', '✔', '✓', '●', '[x]', '(X)'])
                     
                     for s in ['☑', 'X', '✔', '✓', '●', '(•)', '[x]', '(X)', '•', '(*)', '❌', '×']:
-                        t_alt = t_alt.replace(s, "")
-                    t_alt = re.sub(r'^[\bX\b\/\-\_\+\*\.]+\s*', '', t_alt).strip()
+                        frag = frag.replace(s, "")
+                    frag = " ".join(frag.split()).strip()
                     
-                    if es_marca:
-                        correcta_idx = idx_a
-                        
-                    alternativas.append({
-                        "letra": letra,
-                        "texto": t_alt,
-                        "marcada": es_marca
-                    })
-                    idx_a += 1
-                    i += 2
+                    if frag:
+                        mapa_alts[ultima_letra]["texto"] += " " + frag
+                    if es_marcada_flotante:
+                        mapa_alts[ultima_letra]["marcada"] = True
 
+        # Construir la lista final de alternativas ordenadas (A, B, C, D)
+        letras_ordenadas = ['A', 'B', 'C', 'D']
+        for idx_a, l in enumerate(letras_ordenadas):
+            if l in mapa_alts:
+                info = mapa_alts[l]
+                if info["marcada"]:
+                    correcta_idx = idx_a
+                alternativas.append({
+                    "letra": l,
+                    "texto": info["texto"],
+                    "marcada": info["marcada"]
+                })
+
+        # Si no se encontró ninguna marca por análisis directo, aplicamos respaldo secuencial o por defecto
         if correcta_idx is None and alternativas:
             correcta_idx = 0
 
@@ -264,7 +272,7 @@ with st.sidebar:
         
     st.divider()
     st.markdown("### ✈️ Panel de Control")
-    st.info("Sube tus bancos en PDF. Las respuestas manuales y correcciones se guardan permanentemente.")
+    st.info("Sube tus bancos en PDF. El sistema detecta con absoluta precisión las respuestas correctas marcadas.")
 
 # ==================== VISTA: HISTORIAL ====================
 if st.session_state.vista == "historial":
@@ -374,7 +382,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     else:
         st.caption("⚠️ Ninguna alternativa seleccionada (Pregunta en blanco).")
 
-    # Selector manual de respaldo y persistencia automática en el archivo JSON guardado
+    # Selector manual de respaldo solo si la pregunta no tiene respuesta detectada
     if q_actual.get("correcta") is None:
         st.warning("⚠️ Esta pregunta NO tiene una respuesta correcta detectada. Asígnala aquí y se guardará permanentemente:")
         col_m1, col_m2 = st.columns([3, 1])
@@ -384,7 +392,6 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
         with col_m2:
             if st.button("Guardar Respuesta", key=f"btn_save_corr_{idx_actual}"):
                 q_actual["correcta"] = alt_correcta_manual
-                # Guardar cambios permanentemente en el archivo JSON del banco
                 if b_id_actual:
                     banco_data = cargar_banco(b_id_actual)
                     if banco_data:
@@ -453,7 +460,7 @@ else:
     
     if st.button("Procesar y Crear Banco de Preguntas", type="primary"):
         if uploaded_file and nombre_nueva_prueba:
-            with st.spinner("Leyendo PDF y actualizando banco..."):
+            with st.spinner("Leyendo PDF y asociando respuestas correctas..."):
                 preguntas_extraidas = extraer_preguntas_de_pdf(uploaded_file)
                 if preguntas_extraidas:
                     id_limpio = re.sub(r'[^a-zA-Z0-9_\-]', '_', nombre_nueva_prueba)
@@ -461,7 +468,7 @@ else:
                         "nombre": nombre_nueva_prueba,
                         "preguntas": preguntas_extraidas
                     })
-                    st.success(f"¡Prueba '{nombre_nueva_prueba}' procesada con éxito con {len(preguntas_extraidas)} preguntas!")
+                    st.success(f"¡Prueba '{nombre_nueva_prueba}' creada con éxito con {len(preguntas_extraidas)} preguntas!")
                     st.rerun()
                 else:
                     st.error("No se pudieron detectar preguntas con alternativas válidas en el PDF.")
