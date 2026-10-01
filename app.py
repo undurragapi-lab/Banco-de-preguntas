@@ -1,111 +1,297 @@
-import streamlit as st
-import json
 import os
+import re
+import json
 import hashlib
+import streamlit as st
+import pdfplumber
 
-# --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="AeroStudio Pro", page_icon="✈️", layout="wide")
+# --- CONFIGURACIÓN DE PÁGINA (Debe ser la línea 1) ---
+st.set_page_config(
+    page_title="AeroStudio Pro - Simulador de Vuelo",
+    page_icon="✈️️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# --- FUNCIONES DE SEGURIDAD Y BASE DE DATOS ---
-DB_FILE = "usuarios.json"
+# --- INICIALIZACIÓN DE VARIABLES DE SESIÓN ---
+if "usuario_actual" not in st.session_state:
+    st.session_state.usuario_actual = None
+if "modo_oscuro" not in st.session_state:
+    st.session_state.modo_oscuro = False
+if "vista" not in st.session_state:
+    st.session_state.vista = "home"
+if "modo_estudio_data" not in st.session_state:
+    st.session_state.modo_estudio_data = None
+if "resp_dict" not in st.session_state:
+    st.session_state.resp_dict = {}
+
+# --- ALMACENAMIENTO Y UTILIDADES ---
+DATA_DIR = "data_bancos"
+USERS_FILE = "usuarios.json"
+os.makedirs(DATA_DIR, exist_ok=True)
 
 def hash_password(password):
-    """Encripta la contraseña usando SHA-256"""
     return hashlib.sha256(password.encode()).hexdigest()
 
 def cargar_usuarios():
-    """Carga la base de datos de usuarios desde el archivo JSON"""
-    if os.path.exists(DB_FILE):
-        with open(DB_FILE, "r") as f:
-            try:
+    if os.path.exists(USERS_FILE):
+        try:
+            with open(USERS_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
-            except json.JSONDecodeError:
-                return {}
+        except (json.JSONDecodeError, FileNotFoundError):
+            return {}
     return {}
 
-def guardar_usuarios(usuarios_db):
-    """Guarda la base de datos de usuarios en el archivo JSON"""
-    with open(DB_FILE, "w") as f:
-        json.dump(usuarios_db, f, indent=4)
+def guardar_usuarios(usuarios):
+    with open(USERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(usuarios, f, ensure_ascii=False, indent=4)
 
-# --- INICIALIZACIÓN DE SESIÓN ---
-if "usuario_actual" not in st.session_state:
-    st.session_state.usuario_actual = None
+def cargar_banco(nombre_id):
+    ruta = os.path.join(DATA_DIR, f"{nombre_id}.json")
+    if os.path.exists(ruta):
+        with open(ruta, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return None
 
+def guardar_banco(nombre_id, data):
+    ruta = os.path.join(DATA_DIR, f"{nombre_id}.json")
+    with open(ruta, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+
+def listar_bancos():
+    if not os.path.exists(DATA_DIR):
+        return []
+    return [f.replace(".json", "") for f in os.listdir(DATA_DIR) if f.endswith(".json")]
+
+# --- MOTOR DE EXTRACCIÓN DE PDF ---
+def extraer_preguntas_de_pdf(pdf_file):
+    texto_completo = ""
+    with pdfplumber.open(pdf_file) as pdf:
+        for pagina in pdf.pages:
+            t = pagina.extract_text(layout=True)
+            if t:
+                texto_completo += t + "\n"
+
+    mapa_claves_finales = {}
+    patron_pauta = re.compile(r'\b(\d{1,4})[\.\-\:\)]?\s*([A-D])\b', re.IGNORECASE)
+    
+    for linea in texto_completo.split('\n'):
+        linea = linea.strip()
+        if len(linea) < 50 and patron_pauta.search(linea):
+            for num, letra in patron_pauta.findall(linea):
+                mapa_claves_finales[int(num)] = letra.upper()
+
+    bloques = re.split(r'\n(?=\d{1,4}[\.\-\)]\s)', texto_completo)
+    preguntas_parsed = []
+    patron_alt = re.compile(r'^[\*\-\>\s]*([A-D])[\.\-\)]\s*(.*)', re.IGNORECASE | re.DOTALL)
+    patrones_correcta_inline = [r'\*', r'\(x\)', r'\[x\]', r'->', r'respuesta:', r'correcta:']
+
+    for bloque in bloques:
+        bloque = bloque.strip()
+        if not bloque: continue
+            
+        match_num = re.match(r'^(\d{1,4})[\.\-\)]\s*(.*)', bloque, re.DOTALL)
+        if not match_num: continue
+            
+        num_pregunta = int(match_num.group(1))
+        lineas = match_num.group(2).split('\n')
+        enunciado_lineas, alternativas = [], []
+        alt_actual = None
+        
+        for linea in lineas:
+            linea_limpia = linea.strip()
+            if not linea_limpia: continue
+                
+            match_alt = patron_alt.match(linea_limpia)
+            if match_alt:
+                if alt_actual: alternativas.append(alt_actual)
+                es_marcada = any(re.search(p, linea_limpia, re.IGNORECASE) for p in patrones_correcta_inline)
+                alt_actual = {"letra": match_alt.group(1).upper(), "texto": match_alt.group(2).strip(), "marcada": es_marcada}
+            else:
+                if alt_actual:
+                    if any(re.search(p, linea_limpia, re.IGNORECASE) for p in patrones_correcta_inline):
+                        alt_actual["marcada"] = True
+                    else:
+                        alt_actual["texto"] += " " + linea_limpia
+                else:
+                    enunciado_lineas.append(linea_limpia)
+                    
+        if alt_actual: alternativas.append(alt_actual)
+
+        correcta_idx = None
+        if num_pregunta in mapa_claves_finales:
+            letra_clave = mapa_claves_finales[num_pregunta]
+            for idx, alt in enumerate(alternativas):
+                if alt["letra"] == letra_clave:
+                    correcta_idx, alt["marcada"] = idx, True
+                    break
+                    
+        if correcta_idx is None:
+            for idx, alt in enumerate(alternativas):
+                if alt["marcada"]:
+                    correcta_idx = idx
+                    break
+
+        for alt in alternativas:
+            alt["texto"] = re.sub(r'^\s*[\*\-\>]\s*', '', alt["texto"])
+
+        if " ".join(enunciado_lineas).strip() and len(alternativas) >= 2:
+            preguntas_parsed.append({
+                "pregunta": " ".join(enunciado_lineas).strip(),
+                "alternativas": alternativas,
+                "correcta": correcta_idx
+            })
+
+    return preguntas_parsed
+
+# --- CONTROL DE ACCESO (LOGIN/REGISTRO) ---
 usuarios_db = cargar_usuarios()
 
-# --- CONTROL DE ACCESO (LOGIN / REGISTRO) ---
 if st.session_state.usuario_actual is None:
-    # Diseño del encabezado
-    st.markdown("<h1 style='text-align: center;'>✈️ AeroStudio Pro</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center;'>Plataforma de entrenamiento aeronáutico</p>", unsafe_allow_html=True)
-    st.write("---")
+    st.markdown("<h1 style='text-align: center; padding-top: 50px;'>✈️ AeroStudio Pro</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center;'>Plataforma de Entrenamiento</p>", unsafe_allow_html=True)
+    st.divider()
     
-    # Centrar los formularios
     col1, col2, col3 = st.columns([1, 2, 1])
-    
     with col2:
-        tab1, tab2 = st.tabs(["Iniciar Sesión", "Crear Cuenta"])
+        tab_login, tab_registro = st.tabs(["Iniciar Sesión", "Crear Cuenta"])
         
-        with tab1:
-            email_in = st.text_input("Correo electrónico:", key="login_email")
-            pass_in = st.text_input("Contraseña:", type="password", key="login_pass")
-            
-            if st.button("Ingresar", use_container_width=True):
-                if email_in in usuarios_db:
-                    db_pass = usuarios_db[email_in].get("password", "")
-                    pass_in_hashed = hash_password(pass_in)
+        with tab_login:
+            email_in = st.text_input("Correo electrónico:", key="l_email")
+            pass_in = st.text_input("Contraseña:", type="password", key="l_pass")
+            if st.button("Ingresar", use_container_width=True, type="primary"):
+                email_in = email_in.strip().lower()
+                if email_in in usuarios_db and usuarios_db[email_in]["password"] == hash_password(pass_in):
+                    st.session_state.usuario_actual = email_in
+                    st.rerun()
+                else:
+                    st.error("Credenciales incorrectas. Verifica tu correo y contraseña.")
                     
-                    # MAGIA AQUÍ: Verifica si la contraseña coincide con el hash nuevo o con el texto plano antiguo
-                    if db_pass == pass_in_hashed or db_pass == pass_in:
-                        # Si era la contraseña antigua (texto plano), la actualiza al formato seguro
-                        if db_pass == pass_in:
-                            usuarios_db[email_in]["password"] = pass_in_hashed
-                            guardar_usuarios(usuarios_db)
-                            
-                        st.session_state.usuario_actual = email_in
-                        st.rerun()
-                    else:
-                        st.error("Credenciales incorrectas.")
+        with tab_registro:
+            reg_nom = st.text_input("Nombre completo:", key="r_nom")
+            reg_email = st.text_input("Correo:", key="r_email")
+            reg_pass = st.text_input("Contraseña:", type="password", key="r_pass")
+            if st.button("Registrarse", use_container_width=True):
+                reg_email = reg_email.strip().lower()
+                if not reg_email or not reg_pass:
+                    st.warning("Completa todos los campos.")
+                elif reg_email in usuarios_db:
+                    st.error("El correo ya existe. Intenta iniciar sesión.")
                 else:
-                    st.error("El usuario no existe. Ve a 'Crear Cuenta'.")
-
-        with tab2:
-            new_email = st.text_input("Correo electrónico:", key="reg_email")
-            new_pass = st.text_input("Contraseña nueva:", type="password", key="reg_pass")
-            new_pass_confirm = st.text_input("Confirmar contraseña:", type="password", key="reg_pass_confirm")
-            
-            if st.button("Crear Cuenta", use_container_width=True):
-                if not new_email or not new_pass:
-                    st.warning("Por favor, completa todos los campos.")
-                elif new_email in usuarios_db:
-                    st.warning("Este correo ya está registrado. Intenta iniciar sesión.")
-                elif new_pass != new_pass_confirm:
-                    st.error("Las contraseñas no coinciden.")
-                elif len(new_pass) < 6:
-                    st.error("La contraseña debe tener al menos 6 caracteres por seguridad.")
-                else:
-                    # Guardar nuevo usuario con contraseña encriptada
-                    usuarios_db[new_email] = {
-                        "password": hash_password(new_pass),
-                        # Aquí puedes agregar más datos iniciales del perfil si los necesitas
-                    }
+                    usuarios_db[reg_email] = {"nombre": reg_nom, "password": hash_password(reg_pass)}
                     guardar_usuarios(usuarios_db)
-                    st.success("Cuenta creada exitosamente. Ahora puedes iniciar sesión arriba.")
+                    st.session_state.usuario_actual = reg_email
+                    st.success("Cuenta creada exitosamente.")
+                    st.rerun()
+    st.stop() # Detiene la ejecución aquí si no hay usuario logueado
 
-# --- APLICACIÓN PRINCIPAL (AeroStudio Pro) ---
-else:
-    # Sidebar con el perfil y cierre de sesión
-    st.sidebar.title("👨‍✈️ Perfil")
-    st.sidebar.write(f"**Usuario:** {st.session_state.usuario_actual}")
-    
-    if st.sidebar.button("Cerrar Sesión", use_container_width=True):
-        st.session_state.usuario_actual = None
+# --- BARRA LATERAL ---
+nombre_usuario = usuarios_db.get(st.session_state.usuario_actual, {}).get("nombre", "Piloto")
+
+with st.sidebar:
+    st.markdown(f"### 👨‍✈ {nombre_usuario}")
+    st.divider()
+    if st.button("🏠 Inicio", use_container_width=True):
+        st.session_state.vista = "home"
         st.rerun()
         
-    st.title("Bienvenido a AeroStudio Pro ✈️")
+    st.divider()
+    if st.button("🚪 Salir", use_container_width=True):
+        st.session_state.usuario_actual = None
+        st.session_state.modo_estudio_data = None
+        st.rerun()
+
+# --- VISTA: ESTUDIO ---
+if st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
+    estudio = st.session_state.modo_estudio_data
+    preguntas = estudio["preguntas"]
+    idx_actual = estudio["idx_actual"]
+    resp_dict = st.session_state.resp_dict
     
-    # =====================================================================
-    # PEGA AQUÍ EL RESTO DE TU CÓDIGO (Parser de PDF, Simulador, Modo Oscuro, etc.)
-    # =====================================================================
-    st.info("El sistema de acceso está funcionando. Inserta el código de los módulos de estudio aquí.")
+    q_actual = preguntas[idx_actual]
+    total = len(preguntas)
+    
+    st.progress((idx_actual + 1) / total)
+    st.markdown(f"**Pregunta {idx_actual + 1} de {total}**")
+    st.markdown(f"### {q_actual['pregunta']}")
+    
+    estado_q = resp_dict.get(idx_actual, {"corregido": False, "elegida": -1})
+    opciones = [(-1, "Selecciona una alternativa...")] + [(i, f"{alt['letra']}.- {alt['texto']}") for i, alt in enumerate(q_actual["alternativas"])]
+    
+    current_index = 0
+    for idx, (orig_i, _) in enumerate(opciones):
+        if orig_i == estado_q["elegida"]:
+            current_index = idx
+            break
+
+    seleccion = st.radio("Alternativas:", options=opciones, format_func=lambda x: x[1], index=current_index, disabled=estado_q["corregido"])
+        
+    if estado_q["corregido"]:
+        idx_correcta = q_actual.get("correcta")
+        if idx_correcta == estado_q["elegida"]:
+            st.success("🎯 ¡Correcto!")
+        else:
+            letra_ok = q_actual["alternativas"][idx_correcta]["letra"] if idx_correcta is not None else "Desconocida"
+            st.error(f"❌ Incorrecto. La correcta era la **{letra_ok}**.")
+            
+    col1, col2 = st.columns(2)
+    with col1:
+        if not estado_q["corregido"] and st.button("Validar Respuesta", type="primary", use_container_width=True):
+            if seleccion[0] != -1:
+                st.session_state.resp_dict[idx_actual] = {"corregido": True, "elegida": seleccion[0]}
+                st.rerun()
+            else:
+                st.warning("Selecciona una opción primero.")
+                
+    with col2:
+        if st.button("Siguiente ➡️" if estado_q["corregido"] else "Omitir", use_container_width=True):
+            if idx_actual < total - 1:
+                st.session_state.modo_estudio_data["idx_actual"] += 1
+                st.rerun()
+            else:
+                st.session_state.vista = "home"
+                st.success("¡Prueba finalizada!")
+                st.rerun()
+
+# --- VISTA: HOME ---
+elif st.session_state.vista == "home":
+    st.title("📚 Centro de Entrenamiento")
+    st.divider()
+
+    uploaded_file = st.file_uploader("Cargar nuevo manual de vuelo (PDF)", type=["pdf"])
+    nombre_prueba = st.text_input("Nombre del Banco de Preguntas:")
+    
+    if st.button("Extraer y Guardar Banco", type="primary"):
+        if uploaded_file and nombre_prueba:
+            with st.spinner("Procesando documento y extrayendo pautas..."):
+                preguntas_extraidas = extraer_preguntas_de_pdf(uploaded_file)
+                if preguntas_extraidas:
+                    id_limpio = re.sub(r'[^a-zA-Z0-9_\-]', '_', nombre_prueba)
+                    guardar_banco(id_limpio, {"nombre": nombre_prueba, "preguntas": preguntas_extraidas})
+                    st.success(f"¡Éxito! {len(preguntas_extraidas)} preguntas extraídas.")
+                    st.rerun()
+                else:
+                    st.error("No se detectó un formato válido de preguntas y alternativas.")
+        else:
+            st.warning("Falta el documento PDF o el nombre.")
+
+    st.subheader("Bancos Disponibles")
+    bancos = listar_bancos()
+    if not bancos:
+        st.info("Aún no has cargado ningún banco de preguntas.")
+    
+    for b_id in bancos:
+        banco_data = cargar_banco(b_id)
+        if not banco_data: continue
+        col1, col2 = st.columns([4, 1])
+        with col1:
+            st.markdown(f"**{banco_data.get('nombre', b_id)}** — {len(banco_data.get('preguntas', []))} preguntas")
+        with col2:
+            if st.button("🚀 Iniciar", key=f"start_{b_id}", use_container_width=True):
+                preg = banco_data.get("preguntas", [])
+                if preg:
+                    st.session_state.resp_dict = {}
+                    st.session_state.modo_estudio_data = {"preguntas": preg, "idx_actual": 0}
+                    st.session_state.vista = "estudio"
+                    st.rerun()
+        st.divider()
