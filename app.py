@@ -5,6 +5,7 @@ import random
 import time
 import tempfile
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import streamlit as st
 import pandas as pd
 import pdfplumber
@@ -248,110 +249,125 @@ def obtener_historial_reciente():
     filtrado = [h for h in historial if h.get("timestamp", 0) >= limite_tiempo and h.get("usuario") == st.session_state.usuario_actual]
     return sorted(filtrado, key=lambda x: x["timestamp"], reverse=True)
 
-# --- MOTOR DE VISIÓN CON GEMINI (CON FALLBACK MULTIMODELO Y REINTENTOS) ---
-def procesar_pdf_con_vision(pdf_path, api_key):
-    """Convierte el PDF temporal en imágenes y usa Gemini con múltiples modelos alternativos y reintentos automáticos para evitar errores 503 / 404."""
-    try:
-        client = genai.Client(api_key=api_key)
-        
-        with st.spinner("🔄 Convirtiendo páginas del documento para análisis visual con IA..."):
-            imagenes = convert_from_path(pdf_path)
-        
-        todas_las_preguntas_parsed = []
-        progress_bar = st.progress(0)
-        total_paginas = len(imagenes)
-        
-        # Lista de modelos a probar en orden si uno falla por saturación (503) o no disponibilidad (404)
-        modelos_disponibles = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']
-        
-        for i, img in enumerate(imagenes):
-            progress_bar.progress((i + 1) / total_paginas, text=f"Analizando página {i+1} de {total_paginas} con Visión IA...")
-            
-            prompt = """
-            Analiza esta página de un examen o banco de preguntas aeronáutico. 
-            Extrae todas las preguntas, sus alternativas (A, B, C, D) y determina la respuesta correcta 
-            (identificada por marcas, negritas, pautas o solucionarios).
-            
-            Devuelve estrictamente un objeto JSON válido con la siguiente estructura exacta, sin texto adicional:
-            {
-              "preguntas": [
-                {
-                  "pregunta": "Texto completo de la pregunta",
-                  "opciones": ["Texto alternativa A", "Texto alternativa B", "Texto alternativa C", "Texto alternativa D"],
-                  "respuesta_correcta": "A" 
-                }
-              ]
-            }
-            Nota: En "respuesta_correcta" coloca únicamente la letra ("A", "B", "C" o "D") de la alternativa correcta. Si no hay preguntas en esta página, devuelve {"preguntas": []}.
-            """
-            
-            response_text = None
-            exito_pagina = False
-            
-            # Intentar con los diferentes modelos y reintentos por congestión (503)
-            for modelo in modelos_disponibles:
-                if exito_pagina:
+# --- MOTOR DE VISIÓN RÁPIDO CON MULTIHILOS Y FALLBACK ---
+def procesar_pagina_individual(args):
+    """Procesa una única página del PDF en paralelo para acelerar el análisis global."""
+    i, img, api_key = args
+    modelos_disponibles = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']
+    
+    prompt = """
+    Analiza esta página de un examen o banco de preguntas aeronáutico. 
+    Extrae todas las preguntas, sus alternativas (A, B, C, D) y determina la respuesta correcta 
+    (identificada por marcas, negritas, pautas o solucionarios).
+    
+    Devuelve estrictamente un objeto JSON válido con la siguiente estructura exacta, sin texto adicional:
+    {
+      "preguntas": [
+        {
+          "pregunta": "Texto completo de la pregunta",
+          "opciones": ["Texto alternativa A", "Texto alternativa B", "Texto alternativa C", "Texto alternativa D"],
+          "respuesta_correcta": "A" 
+        }
+      ]
+    }
+    Nota: En "respuesta_correcta" coloca únicamente la letra ("A", "B", "C" o "D") de la alternativa correcta. Si no hay preguntas en esta página, devuelve {"preguntas": []}.
+    """
+    
+    client = genai.Client(api_key=api_key)
+    response_text = None
+    
+    for modelo in modelos_disponibles:
+        for intento in range(2):
+            try:
+                response = client.models.generate_content(
+                    model=modelo,
+                    contents=[img, prompt],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        temperature=0.1
+                    ),
+                )
+                if response and response.text:
+                    response_text = response.text
                     break
-                
-                # Intentar hasta 3 veces por cada modelo en caso de saturación temporal (503)
-                for intento in range(3):
-                    try:
-                        response = client.models.generate_content(
-                            model=modelo,
-                            contents=[img, prompt],
-                            config=types.GenerateContentConfig(
-                                response_mime_type="application/json",
-                                temperature=0.1
-                            ),
-                        )
-                        if response and response.text:
-                            response_text = response.text
-                            exito_pagina = True
-                            break
-                    except Exception as api_err:
-                        err_str = str(api_err)
-                        # Si es error 503 (alta demanda), esperamos un par de segundos y reintentamos
-                        if "503" in err_str or "UNAVAILABLE" in err_str:
-                            time.sleep(2 * (intento + 1))
-                            continue
-                        else:
-                            # Si es otro error (ej. 404), rompemos para que pruebe el siguiente modelo de la lista
-                            break
+            except Exception as api_err:
+                if "503" in str(api_err) or "UNAVAILABLE" in str(api_err):
+                    time.sleep(1)
+                    continue
+                else:
+                    break
+        if response_text:
+            break
             
-            if response_text:
-                try:
-                    data = json.loads(response_text)
-                    if "preguntas" in data:
-                        for q in data["preguntas"]:
-                            enunciado = q.get("pregunta", "")
-                            opciones_textos = q.get("opciones", [])
-                            letra_corr = str(q.get("respuesta_correcta", "A")).strip().upper()
-                            
-                            alternativas_formateadas = []
-                            correcta_idx = None
-                            
-                            for idx_a, texto_alt in enumerate(opciones_textos[:4]):
-                                letra_let = ['A', 'B', 'C', 'D'][idx_a]
-                                es_correcta = (letra_let == letra_corr or letra_corr in texto_alt.upper())
-                                if es_correcta:
-                                    correcta_idx = idx_a
-                                alternativas_formateadas.append({
-                                    "letra": letra_let,
-                                    "texto": texto_alt,
-                                    "marcada": es_correcta
-                                })
-                            
-                            if enunciado and len(alternativas_formateadas) >= 2:
-                                todas_las_preguntas_parsed.append({
-                                    "pregunta": enunciado,
-                                    "alternativas": alternativas_formateadas,
-                                    "correcta": correcta_idx
-                                })
-                except Exception as parse_err:
-                    print(f"Error parseando JSON de la página {i+1}: {parse_err}")
-                            
+    preguntas_pagina = []
+    if response_text:
+        try:
+            data = json.loads(response_text)
+            if "preguntas" in data:
+                for q in data["preguntas"]:
+                    enunciado = q.get("pregunta", "")
+                    opciones_textos = q.get("opciones", [])
+                    letra_corr = str(q.get("respuesta_correcta", "A")).strip().upper()
+                    
+                    alternativas_formateadas = []
+                    correcta_idx = None
+                    
+                    for idx_a, texto_alt in enumerate(opciones_textos[:4]):
+                        letra_let = ['A', 'B', 'C', 'D'][idx_a]
+                        es_correcta = (letra_let == letra_corr or letra_corr in texto_alt.upper())
+                        if es_correcta:
+                            correcta_idx = idx_a
+                        alternativas_formateadas.append({
+                            "letra": letra_let,
+                            "texto": texto_alt,
+                            "marcada": es_correcta
+                        })
+                    
+                    if enunciado and len(alternativas_formateadas) >= 2:
+                        preguntas_pagina.append({
+                            "pregunta": enunciado,
+                            "alternativas": alternativas_formateadas,
+                            "correcta": correcta_idx
+                        })
+        except:
+            pass
+            
+    return i, preguntas_pagina
+
+def procesar_pdf_con_vision(pdf_path, api_key):
+    """Convierte el PDF y procesa todas las páginas en paralelo (multihilo) para máxima velocidad."""
+    try:
+        with st.spinner("🔄 Renderizando páginas del documento para análisis ultra rápido..."):
+            # Usamos una resolución optimizada (dpi=150) para acelerar transferencia de imagen sin perder legibilidad
+            imagenes = convert_from_path(pdf_path, dpi=150)
+        
+        total_paginas = len(imagenes)
+        todas_las_preguntas_parsed = [[] for _ in range(total_paginas)]
+        
+        progress_bar = st.progress(0, text="Analizando páginas en paralelo con IA...")
+        
+        # Crear tareas para procesamiento concurrente
+        tareas = [(i, img, api_key) for i, img in enumerate(imagenes)]
+        completadas = 0
+        
+        # Ejecutar en paralelo con hasta 4 hilos simultáneos
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {executor.submit(procesar_pagina_individual, tarea): tarea[0] for tarea in tareas}
+            
+            for future in as_completed(futures):
+                idx_pag, resultado_preguntas = future.result()
+                todas_las_preguntas_parsed[idx_pag] = resultado_preguntas
+                completadas += 1
+                progress_bar.progress(completadas / total_paginas, text=f"Procesadas {completadas} de {total_paginas} páginas...")
+                
         progress_bar.empty()
-        return todas_las_preguntas_parsed
+        
+        # Aplanar la lista ordenada de resultados
+        preguntas_finales = []
+        for p_list in todas_las_preguntas_parsed:
+            preguntas_finales.extend(p_list)
+            
+        return preguntas_finales
 
     except Exception as e:
         st.error(f"Error crítico al procesar con Visión IA: {e}")
@@ -434,7 +450,7 @@ with st.sidebar:
         st.rerun()
         
     st.divider()
-    st.info("💡 **Tip:** Si hay alta demanda en la API (error 503), el sistema reintentará automáticamente con modelos alternativos.")
+    st.info("💡 **Aceleración activa:** El procesamiento de PDFs ahora utiliza múltiples hilos simultáneos.")
     st.write("")
     if st.button("🚪 Cerrar Sesión", type="secondary", use_container_width=True):
         st.session_state.usuario_actual = None
@@ -693,7 +709,7 @@ else:
                     st.success(f"¡Éxito! Se extrajeron {len(preguntas_extraidas)} preguntas correctamente.")
                     st.rerun()
                 else:
-                    st.error("No se pudieron extraer preguntas o el archivo requiere revisión debido a saturación temporal en la API.")
+                    st.error("No se pudieron extraer preguntas o el archivo requiere revisión.")
             else:
                 st.warning("Falta adjuntar el documento o ingresar el título de la prueba.")
                 
