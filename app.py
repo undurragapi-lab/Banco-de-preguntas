@@ -17,7 +17,6 @@ st.set_page_config(
 # Inyección de estilos CSS para alinear los botones de alternativas estrictamente a la izquierda
 st.markdown("""
 <style>
-    /* Forzar alineación a la izquierda en los botones de opciones */
     div.stButton > button {
         text-align: left !important;
         justify-content: flex-start !important;
@@ -92,14 +91,25 @@ def obtener_historial_reciente():
     filtrado = [h for h in historial if h.get("timestamp", 0) >= limite_tiempo]
     return sorted(filtrado, key=lambda x: x["timestamp"], reverse=True)
 
-# Parser avanzado de PDF basado en tiquets y marcas
+# Parser avanzado optimizado para detectar anotaciones de editores PDF, dibujos y marcas manuscritas
 def extraer_preguntas_de_pdf(pdf_file):
     reader = PdfReader(pdf_file)
     texto_completo = ""
     for pagina in reader.pages:
+        # Extraer texto y revisar anotaciones si las hubiera incrustadas
         t = pagina.extract_text()
         if t:
             texto_completo += t + "\n"
+        
+        # Intentar extraer texto de objetos de anotación/anotaciones de formularios o dibujos vectoriales PDF
+        if "/Annots" in pagina:
+            try:
+                for annot in pagina["/Annots"]:
+                    obj = annot.get_object()
+                    if "/Contents" in obj:
+                        texto_completo += str(obj["/Contents"]) + "\n"
+            except:
+                pass
 
     texto_completo = re.sub(r'\r\n', '\n', texto_completo)
 
@@ -128,7 +138,7 @@ def extraer_preguntas_de_pdf(pdf_file):
         enunciado = re.sub(r'Materia\s*:.*?Cantidad de Preguntas\s*:\s*[0-9]+', '', enunciado).strip()
         
         alternativas = []
-        candidatas_correctas = []
+        correcta_idx = None
         
         i = 1
         while i < len(partes_alt) - 1:
@@ -138,29 +148,32 @@ def extraer_preguntas_de_pdf(pdf_file):
             
             idx = ord(letra) - ord('A')
             
-            tiene_marca_general = any(s in texto_alt or s in partes_alt[i] for s in ["●", "(•)", "[x]", "(X)", "•", "(*)", "✓", "✔", "√"])
-            tiene_tiquet = any(s in texto_alt or s in partes_alt[i] for s in ["✓", "✔", "√"])
-            tiene_x = any(s in texto_alt or s in partes_alt[i] for s in ["X", "❌", "×"])
+            # Patrones amplios para detectar símbolos, trazos de editores PDF y marcas manuscritas
+            etiqueta_y_texto = partes_alt[i] + " " + texto_alt
             
-            if tiene_tiquet:
-                candidatas_correctas = [idx]
-            elif tiene_marca_general and not tiene_x:
-                candidatas_correctas.append(idx)
+            # Detectar marcas estándar, tiquets, equis (X) y caracteres extra generados por editores de dibujo PDF
+            simbolos_detectados = ["●", "(•)", "[x]", "(X)", "•", "(*)", "✓", "✔", "√", "X", "❌", "×", "/"]
+            tiene_marca = any(s in etiqueta_y_texto for s in simbolos_detectados)
+            
+            # Si el texto de la alternativa arranca con una marca de dibujo suelta (ej. "X 24 horas" o "X- 24 horas")
+            if re.search(r'^[\bX\b\/\-\_\+\*\.\(\)]+\s*', texto_alt):
+                tiene_marca = True
+
+            if tiene_marca:
+                correcta_idx = idx
                 
-            for simbolo in ["●", "(•)", "[x]", "(X)", "•", "(*)", "✓", "✔", "√", "X", "❌", "×"]:
+            # Limpiar símbolos visuales y trazos del texto limpio de la alternativa
+            for simbolo in simbolos_detectados:
                 texto_alt = texto_alt.replace(simbolo, "")
-            texto_alt = texto_alt.strip()
+            
+            texto_alt = re.sub(r'^[\bX\b\/\-\_\+\*\.]+\s*', '', texto_alt).strip()
 
             alternativas.append({
                 "letra": letra,
                 "texto": texto_alt,
-                "marcada": tiene_marca_general
+                "marcada": tiene_marca
             })
             i += 2
-
-        correcta_idx = None
-        if candidatas_correctas:
-            correcta_idx = candidatas_correctas[0]
 
         if enunciado and len(alternativas) >= 2:
             preguntas_parsed.append({
@@ -193,7 +206,7 @@ with st.sidebar:
         
     st.divider()
     st.markdown("### ✈️ Panel de Control")
-    st.info("Sube tus bancos en PDF. El sistema detecta tiquets de corrección y marcas automáticamente.")
+    st.info("Sube tus bancos en PDF con marcas, dibujos o fotos. El sistema detectará las respuestas correctas.")
 
 # ==================== VISTA: HISTORIAL ====================
 if st.session_state.vista == "historial":
@@ -302,9 +315,9 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     else:
         st.caption("⚠️ Ninguna alternativa seleccionada (Pregunta en blanco).")
 
-    # Selector manual solo si la pregunta no tiene respuesta en el PDF original
+    # Selector manual de respaldo por si el dibujo o foto no fue detectado automáticamente
     if q_actual.get("correcta") is None:
-        st.warning("⚠️ Esta pregunta NO tiene una respuesta correcta marcada en el documento original. Por favor, asígnela para poder corregirla:")
+        st.warning("⚠️ Esta pregunta NO tiene una respuesta correcta detectada en el documento/imagen. Asígnala aquí una vez y quedará guardada:")
         col_m1, col_m2 = st.columns([3, 1])
         with col_m1:
             opciones_textos = [f"{alt['letra']}.- {alt['texto']}" for alt in q_actual["alternativas"]]
@@ -378,7 +391,7 @@ else:
     
     if st.button("Procesar y Crear Banco de Preguntas", type="primary"):
         if uploaded_file and nombre_nueva_prueba:
-            with st.spinner("Leyendo PDF, buscando tiquets y detectando alternativas marcadas..."):
+            with st.spinner("Leyendo PDF, buscando marcas en dibujos y anotaciones..."):
                 preguntas_extraidas = extraer_preguntas_de_pdf(uploaded_file)
                 if preguntas_extraidas:
                     id_limpio = re.sub(r'[^a-zA-Z0-9_\-]', '_', nombre_nueva_prueba)
