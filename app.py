@@ -499,7 +499,7 @@ with st.sidebar:
     st.divider()
     st.info("💡 **Consejo:** Utiliza el botón de engranaje (⚙️) durante tus exámenes para ajustar respuestas en tiempo real.")
     st.write("")
-    if st.button("🚪 Cerrar Sesión", kind="secondary", use_container_width=True):
+   if st.button("🚪 Cerrar Sesión", type="secondary", use_container_width=True):
         st.session_state.usuario_actual = None
         eliminar_sesion_persistida()
         st.session_state.vista = "home"
