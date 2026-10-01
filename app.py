@@ -249,18 +249,21 @@ def obtener_historial_reciente():
     filtrado = [h for h in historial if h.get("timestamp", 0) >= limite_tiempo and h.get("usuario") == st.session_state.usuario_actual]
     return sorted(filtrado, key=lambda x: x["timestamp"], reverse=True)
 
-# --- MOTOR DE VISIÓN RÁPIDO CON MULTIHILOS Y FALLBACK ---
+# --- MOTOR DE VISIÓN OPTIMIZADO (EXHAUSTIVO) ---
 def procesar_pagina_individual(args):
-    """Procesa una única página del PDF en paralelo para acelerar el análisis global."""
+    """Procesa una única página del PDF con un prompt riguroso para no omitir preguntas ni pautas."""
     i, img, api_key = args
-    modelos_disponibles = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']
+    modelos_disponibles = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-3.8-flash']
     
     prompt = """
-    Analiza esta página de un examen o banco de preguntas aeronáutico. 
-    Extrae todas las preguntas, sus alternativas (A, B, C, D) y determina la respuesta correcta 
-    (identificada por marcas, negritas, pautas o solucionarios).
-    
-    Devuelve estrictamente un objeto JSON válido con la siguiente estructura exacta, sin texto adicional:
+    Eres un experto analista de documentación aeronáutica y exámenes de certificación.
+    Tu tarea es extraer de forma EXHAUSTIVA y COMPLETAMENTE RIGUROSA todas las preguntas presentes en esta página. 
+    No omitas ninguna pregunta que aparezca visualmente en la imagen. Cada pregunta debe incluir:
+    1. El texto completo de la pregunta.
+    2. Todas las alternativas disponibles (usualmente etiquetadas como A, B, C, D o 1, 2, 3, 4).
+    3. La respuesta correcta identificada mediante marcas de agua, negritas, pautas al final de la página, subrayados o claves de respuestas oficiales. Si no hay indicios explícitos, intenta deducirla lógicamente o déjala indicada.
+
+    Devuelve estrictamente un objeto JSON válido con esta estructura exacta y sin texto adicional:
     {
       "preguntas": [
         {
@@ -270,7 +273,7 @@ def procesar_pagina_individual(args):
         }
       ]
     }
-    Nota: En "respuesta_correcta" coloca únicamente la letra ("A", "B", "C" o "D") de la alternativa correcta. Si no hay preguntas en esta página, devuelve {"preguntas": []}.
+    Nota: En "respuesta_correcta" coloca únicamente la letra ("A", "B", "C" o "D") correspondiente. Si la página contiene una tabla de respuestas o solucionario al final, relaciónalo con sus respectivas preguntas. Si no hay preguntas, devuelve {"preguntas": []}.
     """
     
     client = genai.Client(api_key=api_key)
@@ -284,7 +287,7 @@ def procesar_pagina_individual(args):
                     contents=[img, prompt],
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
-                        temperature=0.1
+                        temperature=0.0 # Temperatura en 0 para máxima precisión y menor alucinación
                     ),
                 )
                 if response and response.text:
@@ -335,22 +338,20 @@ def procesar_pagina_individual(args):
     return i, preguntas_pagina
 
 def procesar_pdf_con_vision(pdf_path, api_key):
-    """Convierte el PDF y procesa todas las páginas en paralelo (multihilo) para máxima velocidad."""
+    """Convierte el PDF a alta resolución y procesa todas las páginas en paralelo con máxima cobertura."""
     try:
-        with st.spinner("🔄 Renderizando páginas del documento para análisis ultra rápido..."):
-            # Usamos una resolución optimizada (dpi=150) para acelerar transferencia de imagen sin perder legibilidad
-            imagenes = convert_from_path(pdf_path, dpi=150)
+        with st.spinner("🔄 Renderizando páginas del documento para análisis exhaustivo..."):
+            # Usamos DPI 200 para asegurar que textos pequeños o pautas en tablas se lean con claridad absoluta
+            imagenes = convert_from_path(pdf_path, dpi=200)
         
         total_paginas = len(imagenes)
         todas_las_preguntas_parsed = [[] for _ in range(total_paginas)]
         
-        progress_bar = st.progress(0, text="Analizando páginas en paralelo con IA...")
+        progress_bar = st.progress(0, text="Extrayendo preguntas y respuestas con Visión IA...")
         
-        # Crear tareas para procesamiento concurrente
         tareas = [(i, img, api_key) for i, img in enumerate(imagenes)]
         completadas = 0
         
-        # Ejecutar en paralelo con hasta 4 hilos simultáneos
         with ThreadPoolExecutor(max_workers=4) as executor:
             futures = {executor.submit(procesar_pagina_individual, tarea): tarea[0] for tarea in tareas}
             
@@ -358,11 +359,10 @@ def procesar_pdf_con_vision(pdf_path, api_key):
                 idx_pag, resultado_preguntas = future.result()
                 todas_las_preguntas_parsed[idx_pag] = resultado_preguntas
                 completadas += 1
-                progress_bar.progress(completadas / total_paginas, text=f"Procesadas {completadas} de {total_paginas} páginas...")
+                progress_bar.progress(completadas / total_paginas, text=f"Analizadas {completadas} de {total_paginas} páginas...")
                 
         progress_bar.empty()
         
-        # Aplanar la lista ordenada de resultados
         preguntas_finales = []
         for p_list in todas_las_preguntas_parsed:
             preguntas_finales.extend(p_list)
@@ -450,7 +450,7 @@ with st.sidebar:
         st.rerun()
         
     st.divider()
-    st.info("💡 **Aceleración activa:** El procesamiento de PDFs ahora utiliza múltiples hilos simultáneos.")
+    st.info("💡 **Extracción Exhaustiva:** Motor de visión ajustado para capturar todas las preguntas y respuestas.")
     st.write("")
     if st.button("🚪 Cerrar Sesión", type="secondary", use_container_width=True):
         st.session_state.usuario_actual = None
@@ -620,7 +620,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
         resp_dict[idx_actual]["elegida"] = seleccion_radio if seleccion_radio != -1 else None
 
     if q_actual.get("correcta") is None:
-        st.warning("⚠️ Esta pregunta no tiene respuesta correcta detectada. Haz clic en el engranaje superior ⚙️ para asignarla.")
+        st.warning("⚠️ Esta pregunta no tiene respuesta correcta detectada. Haz clic en el engranaje superior ⚙️️ para asignarla.")
 
     if corregido:
         idx_correcta = q_actual.get("correcta")
