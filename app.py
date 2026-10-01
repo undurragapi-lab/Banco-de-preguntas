@@ -2,6 +2,7 @@ import os
 import re
 import json
 import random
+import time
 import tempfile
 from datetime import datetime
 import streamlit as st
@@ -15,7 +16,7 @@ from google.genai import types
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
     page_title="AeroStudio Pro - Simulador de Vuelo",
-    page_icon="✈️️",
+    page_icon="✈",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -122,7 +123,7 @@ SESSION_FILE = "sesion_activa.json"
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# --- GESTIÓN DE API KEY DE GEMINI (Nube / Secretos) ---
+# --- GESTIÓN DE API KEY DE GEMINI ---
 api_key_configurada = ""
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -247,9 +248,9 @@ def obtener_historial_reciente():
     filtrado = [h for h in historial if h.get("timestamp", 0) >= limite_tiempo and h.get("usuario") == st.session_state.usuario_actual]
     return sorted(filtrado, key=lambda x: x["timestamp"], reverse=True)
 
-# --- MOTOR DE VISIÓN CON GEMINI (ACTUALIZADO A GEMINI-3.8-FLASH) ---
+# --- MOTOR DE VISIÓN CON GEMINI (CON FALLBACK MULTIMODELO Y REINTENTOS) ---
 def procesar_pdf_con_vision(pdf_path, api_key):
-    """Convierte el PDF temporal en imágenes y usa Gemini Flash para extraer preguntas y respuestas con total precisión."""
+    """Convierte el PDF temporal en imágenes y usa Gemini con múltiples modelos alternativos y reintentos automáticos para evitar errores 503 / 404."""
     try:
         client = genai.Client(api_key=api_key)
         
@@ -259,6 +260,9 @@ def procesar_pdf_con_vision(pdf_path, api_key):
         todas_las_preguntas_parsed = []
         progress_bar = st.progress(0)
         total_paginas = len(imagenes)
+        
+        # Lista de modelos a probar en orden si uno falla por saturación (503) o no disponibilidad (404)
+        modelos_disponibles = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']
         
         for i, img in enumerate(imagenes):
             progress_bar.progress((i + 1) / total_paginas, text=f"Analizando página {i+1} de {total_paginas} con Visión IA...")
@@ -281,50 +285,76 @@ def procesar_pdf_con_vision(pdf_path, api_key):
             Nota: En "respuesta_correcta" coloca únicamente la letra ("A", "B", "C" o "D") de la alternativa correcta. Si no hay preguntas en esta página, devuelve {"preguntas": []}.
             """
             
-            # Se utiliza el modelo actualizado gemini-3.8-flash
-            response = client.models.generate_content(
-                model='gemini-3.8-flash',
-                contents=[img, prompt],
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.1
-                ),
-            )
+            response_text = None
+            exito_pagina = False
             
-            if response.text:
-                data = json.loads(response.text)
-                if "preguntas" in data:
-                    for q in data["preguntas"]:
-                        enunciado = q.get("pregunta", "")
-                        opciones_textos = q.get("opciones", [])
-                        letra_corr = str(q.get("respuesta_correcta", "A")).strip().upper()
-                        
-                        alternativas_formateadas = []
-                        correcta_idx = None
-                        
-                        for idx_a, texto_alt in enumerate(opciones_textos[:4]):
-                            letra_let = ['A', 'B', 'C', 'D'][idx_a]
-                            es_correcta = (letra_let == letra_corr or letra_corr in texto_alt.upper())
-                            if es_correcta:
-                                correcta_idx = idx_a
-                            alternativas_formateadas.append({
-                                "letra": letra_let,
-                                "texto": texto_alt,
-                                "marcada": es_correcta
-                            })
-                        
-                        if enunciado and len(alternativas_formateadas) >= 2:
-                            todas_las_preguntas_parsed.append({
-                                "pregunta": enunciado,
-                                "alternativas": alternativas_formateadas,
-                                "correcta": correcta_idx
-                            })
+            # Intentar con los diferentes modelos y reintentos por congestión (503)
+            for modelo in modelos_disponibles:
+                if exito_pagina:
+                    break
+                
+                # Intentar hasta 3 veces por cada modelo en caso de saturación temporal (503)
+                for intento in range(3):
+                    try:
+                        response = client.models.generate_content(
+                            model=modelo,
+                            contents=[img, prompt],
+                            config=types.GenerateContentConfig(
+                                response_mime_type="application/json",
+                                temperature=0.1
+                            ),
+                        )
+                        if response and response.text:
+                            response_text = response.text
+                            exito_pagina = True
+                            break
+                    except Exception as api_err:
+                        err_str = str(api_err)
+                        # Si es error 503 (alta demanda), esperamos un par de segundos y reintentamos
+                        if "503" in err_str or "UNAVAILABLE" in err_str:
+                            time.sleep(2 * (intento + 1))
+                            continue
+                        else:
+                            # Si es otro error (ej. 404), rompemos para que pruebe el siguiente modelo de la lista
+                            break
+            
+            if response_text:
+                try:
+                    data = json.loads(response_text)
+                    if "preguntas" in data:
+                        for q in data["preguntas"]:
+                            enunciado = q.get("pregunta", "")
+                            opciones_textos = q.get("opciones", [])
+                            letra_corr = str(q.get("respuesta_correcta", "A")).strip().upper()
+                            
+                            alternativas_formateadas = []
+                            correcta_idx = None
+                            
+                            for idx_a, texto_alt in enumerate(opciones_textos[:4]):
+                                letra_let = ['A', 'B', 'C', 'D'][idx_a]
+                                es_correcta = (letra_let == letra_corr or letra_corr in texto_alt.upper())
+                                if es_correcta:
+                                    correcta_idx = idx_a
+                                alternativas_formateadas.append({
+                                    "letra": letra_let,
+                                    "texto": texto_alt,
+                                    "marcada": es_correcta
+                                })
+                            
+                            if enunciado and len(alternativas_formateadas) >= 2:
+                                todas_las_preguntas_parsed.append({
+                                    "pregunta": enunciado,
+                                    "alternativas": alternativas_formateadas,
+                                    "correcta": correcta_idx
+                                })
+                except Exception as parse_err:
+                    print(f"Error parseando JSON de la página {i+1}: {parse_err}")
                             
         progress_bar.empty()
         return todas_las_preguntas_parsed
 
     except Exception as e:
-        st.error(f"Error al procesar con Visión IA: {e}")
+        st.error(f"Error crítico al procesar con Visión IA: {e}")
         return None
 
 # --- CONTROL DE ACCESO ---
@@ -404,7 +434,7 @@ with st.sidebar:
         st.rerun()
         
     st.divider()
-    st.info("💡 **Tip:** Si algún banco PDF tiene problemas de lectura, usa la opción de Visión IA o el engranaje ⚙️ durante la prueba.")
+    st.info("💡 **Tip:** Si hay alta demanda en la API (error 503), el sistema reintentará automáticamente con modelos alternativos.")
     st.write("")
     if st.button("🚪 Cerrar Sesión", type="secondary", use_container_width=True):
         st.session_state.usuario_actual = None
@@ -626,7 +656,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
                         st.session_state.modo_estudio_data = None
                         st.rerun()
 
-# --- VISTA: HOME (CON OPCIÓN DE VISIÓN IA) ---
+# --- VISTA: HOME ---
 else:
     st.title("📚 AeroStudio Pro - Centro de Pruebas")
     st.markdown(f"Bienvenido de nuevo, **{datos_usuario['nombre']}**. Sube tus documentos en PDF o selecciona un banco guardado para iniciar tu entrenamiento.")
@@ -663,7 +693,7 @@ else:
                     st.success(f"¡Éxito! Se extrajeron {len(preguntas_extraidas)} preguntas correctamente.")
                     st.rerun()
                 else:
-                    st.error("No se pudieron extraer preguntas o el archivo requiere revisión.")
+                    st.error("No se pudieron extraer preguntas o el archivo requiere revisión debido a saturación temporal en la API.")
             else:
                 st.warning("Falta adjuntar el documento o ingresar el título de la prueba.")
                 
