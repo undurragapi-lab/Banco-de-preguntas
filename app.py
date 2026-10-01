@@ -36,8 +36,15 @@ def guardar_usuarios(usuarios):
     with open(USERS_FILE, "w", encoding="utf-8") as f:
         json.dump(usuarios, f, ensure_ascii=False, indent=4)
 
+# Persistencia de sesión al refrescar la página usando query_params
 if "usuario_actual" not in st.session_state:
-    st.session_state.usuario_actual = None
+    saved_user = st.query_params.get("logged_in_user")
+    usuarios_db_temp = cargar_usuarios()
+    if saved_user and saved_user in usuarios_db_temp:
+        st.session_state.usuario_actual = saved_user
+    else:
+        st.session_state.usuario_actual = None
+
 if "vista" not in st.session_state:
     st.session_state.vista = "home"
 if "modo_estudio_data" not in st.session_state:
@@ -120,43 +127,33 @@ def obtener_historial_reciente():
     filtrado = [h for h in historial if h.get("timestamp", 0) >= limite_tiempo and h.get("usuario") == st.session_state.usuario_actual]
     return sorted(filtrado, key=lambda x: x["timestamp"], reverse=True)
 
-# --- PARSER AVANZADO: DETECCIÓN DE ANOTACIONES, RAYAS Y DESTACADOS DE TABLETS ---
+# --- PARSER AJUSTADO: DETECCIÓN DE ☑ Y X EN PDF ---
 def extraer_preguntas_de_pdf(pdf_file):
     reader = PdfReader(pdf_file)
     texto_completo = ""
     
-    # Recorrer páginas y extraer tanto el texto plano como el contenido de anotaciones (marcas de tablet, destacados, etc.)
     for pagina in reader.pages:
         t = pagina.extract_text()
         if t:
             texto_completo += t + "\n"
             
-        # Extraer anotaciones de editores PDF (marcas, rectángulos de resaltado, trazos de lápiz o stylus)
         if "/Annots" in pagina:
             try:
                 for annot in pagina["/Annots"]:
                     obj = annot.get_object()
-                    # Si la anotación tiene contenido de texto, contenido asociado o bandera de resaltado/ink
-                    annot_type = str(obj.get("/Subtype", ""))
                     if "/Contents" in obj:
-                        contenido_annot = str(obj["/Contents"])
-                        texto_completo += " [MARCA_ANNOT: " + contenido_annot + "] \n"
-                    elif annot_type in ["/Highlight", "/Ink", "/Square", "/Circle", "/Underline"]:
-                        # Indicar al parser que hay un trazo/resaltado en esta sección de la página
-                        rect = obj.get("/Rect", [0, 0, 0, 0])
-                        texto_completo += f" [DESTACADO_TABLET_Y_{rect[1] if len(rect)>1 else 0}] \n"
+                        texto_completo += " [MARCA_ANNOT: " + str(obj["/Contents"]) + "] \n"
             except:
                 pass
 
     texto_completo = re.sub(r'\r\n', '\n', texto_completo)
     
-    # Dividir bloques por número de pregunta (ej. "1.-", "2.-")
     bloques = re.split(r'\n(?=[0-9]{1,3}\.-\s)', texto_completo)
     if len(bloques) <= 1:
         bloques = re.split(r'(?=[0-9]{1,3}\.-\s)', texto_completo)
 
     preguntas_parsed = []
-    patron_alt_inicio = re.compile(r'^[☑☒X✔✓xVv\[\]\(\)\*\-\s]*([A-Da-d])[\.\-\)]\s*', re.IGNORECASE)
+    patron_alt_inicio = re.compile(r'^[☑☒X✔✓xVv\[\]\(\)\*\-\s]*([A-Da-dXx])[\.\-\)]\s*', re.IGNORECASE)
     
     for bloque in bloques:
         bloque = bloque.strip()
@@ -175,7 +172,7 @@ def extraer_preguntas_de_pdf(pdf_file):
         en_alternativas = False
         
         for linea in lineas:
-            if patron_alt_inicio.match(linea):
+            if patron_alt_inicio.match(linea) or re.match(r'^[☑☒X✔✓]', linea):
                 en_alternativas = True
             
             if not en_alternativas:
@@ -193,18 +190,35 @@ def extraer_preguntas_de_pdf(pdf_file):
         
         for linea in alternativas_crudas:
             match_alt = patron_alt_inicio.match(linea)
-            if match_alt:
+            match_directo_marcado = re.match(r'^[☑☒X✔✓]\s*[\-\.]?\s*([A-Da-d])?[\.\-\)]?\s*(.*)', linea)
+            
+            if match_alt or match_directo_marcado:
                 if alt_actual_letra:
                     mapa_alts[alt_actual_letra] = {
                         "texto": " ".join(alt_actual_texto).strip(),
                         "marcada": alt_actual_marcada
                     }
                 
-                alt_actual_letra = match_alt.group(1).upper()
+                if match_alt:
+                    letra_capturada = match_alt.group(1).upper()
+                    if letra_capturada not in ['A', 'B', 'C', 'D']:
+                        letra_capturada = None
+                    alt_actual_letra = letra_capturada
+                else:
+                    alt_actual_letra = None
                 
-                # Detectar marcas tradicionales o marcas de resaltado/rayas hechas en tablets ([DESTACADO_TABLET...], etc.)
-                es_marcada = any(s in linea for s in ['☑', '☒', 'X', '✔', '✓', 'x', '[x]', '(X)', '[X]', 'V', '*', '[DESTACADO_TABLET', '[MARCA_ANNOT'])
+                es_marcada = any(s in linea for s in ['☑', '☒', 'X', '✔', '✓', 'x', '[x]', '(X)', '[X]', 'V', '*'])
                 
+                if not alt_actual_letra:
+                    existentes = list(mapa_alts.keys())
+                    siguientes = ['A', 'B', 'C', 'D']
+                    for sig in siguientes:
+                        if sig not in existentes:
+                            alt_actual_letra = sig
+                            break
+                    if not alt_actual_letra:
+                        alt_actual_letra = 'A'
+
                 texto_limpio = patron_alt_inicio.sub('', linea)
                 for s in ['☑', '☒', 'X', '✔', '✓', 'x', '[x]', '(X)', '[X]', 'V', '•', '(*)', '❌', '×', '*']:
                     texto_limpio = texto_limpio.replace(s, "")
@@ -220,7 +234,7 @@ def extraer_preguntas_de_pdf(pdf_file):
                     texto_cont = re.sub(r'^[\-\.\s]+', '', texto_cont).strip()
                     if texto_cont:
                         alt_actual_texto.append(texto_cont)
-                    if any(s in linea for s in ['☑', '☒', 'X', '✔', '✓', 'x', '[x]', '(X)', '[X]', '[DESTACADO_TABLET', '[MARCA_ANNOT']):
+                    if any(s in linea for s in ['☑', '☒', 'X', '✔', '✓', 'x', '[x]', '(X)', '[X]']):
                         alt_actual_marcada = True
 
         if alt_actual_letra:
@@ -269,6 +283,7 @@ if st.session_state.usuario_actual is None:
             email_ingreso = email_ingreso.strip().lower()
             if email_ingreso in usuarios_db and usuarios_db[email_ingreso]["password"] == pass_ingreso:
                 st.session_state.usuario_actual = email_ingreso
+                st.query_params["logged_in_user"] = email_ingreso  # Guardar sesión en query params para refrescos
                 st.success("¡Acceso exitoso!")
                 st.rerun()
             else:
@@ -293,6 +308,7 @@ if st.session_state.usuario_actual is None:
                 }
                 guardar_usuarios(usuarios_db)
                 st.session_state.usuario_actual = reg_email
+                st.query_params["logged_in_user"] = reg_email  # Guardar sesión en query params para refrescos
                 st.success("¡Cuenta creada con éxito!")
                 st.rerun()
     st.stop()
@@ -325,6 +341,8 @@ with st.sidebar:
     st.write("")
     if st.button("🚪 Cerrar Sesión", type="secondary", use_container_width=True):
         st.session_state.usuario_actual = None
+        if "logged_in_user" in st.query_params:
+            del st.query_params["logged_in_user"]  # Limpiar la persistencia al cerrar sesión
         st.session_state.vista = "home"
         st.session_state.modo_estudio_data = None
         st.rerun()
@@ -347,6 +365,7 @@ if st.session_state.vista == "perfil":
                     usuarios_db[nuevo_email_limpio] = {"nombre": nuevo_nombre, "email": nuevo_email_limpio, "password": nueva_pass}
                     del usuarios_db[email_viejo]
                     st.session_state.usuario_actual = nuevo_email_limpio
+                    st.query_params["logged_in_user"] = nuevo_email_limpio
                     guardar_usuarios(usuarios_db)
                     st.success("¡Perfil actualizado!")
                     st.rerun()
@@ -534,7 +553,7 @@ else:
     
     if st.button("Procesar y Crear Banco de Preguntas", type="primary"):
         if uploaded_file and nombre_nueva_prueba:
-            with st.spinner("Leyendo PDF, marcas de tablets y anotaciones..."):
+            with st.spinner("Leyendo PDF y marcas de respuestas..."):
                 preguntas_extraidas = extraer_preguntas_de_pdf(uploaded_file)
                 if preguntas_extraidas:
                     id_limpio = re.sub(r'[^a-zA-Z0-9_\-]', '_', nombre_nueva_prueba)
