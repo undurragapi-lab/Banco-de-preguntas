@@ -15,7 +15,7 @@ from google.genai import types
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
     page_title="AeroStudio Pro - Simulador de Vuelo",
-    page_icon="✈️",
+    page_icon="✈️️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -247,7 +247,7 @@ def obtener_historial_reciente():
     filtrado = [h for h in historial if h.get("timestamp", 0) >= limite_tiempo and h.get("usuario") == st.session_state.usuario_actual]
     return sorted(filtrado, key=lambda x: x["timestamp"], reverse=True)
 
-# --- MOTOR DE VISIÓN CON GEMINI (ACTUALIZADO) ---
+# --- MOTOR DE VISIÓN CON GEMINI (ACTUALIZADO A GEMINI-3.8-FLASH) ---
 def procesar_pdf_con_vision(pdf_path, api_key):
     """Convierte el PDF temporal en imágenes y usa Gemini Flash para extraer preguntas y respuestas con total precisión."""
     try:
@@ -281,9 +281,9 @@ def procesar_pdf_con_vision(pdf_path, api_key):
             Nota: En "respuesta_correcta" coloca únicamente la letra ("A", "B", "C" o "D") de la alternativa correcta. Si no hay preguntas en esta página, devuelve {"preguntas": []}.
             """
             
-            # Se usa gemini-2.5-flash (o gemini-1.5-flash según disponibilidad del SDK)
+            # Se utiliza el modelo actualizado gemini-3.8-flash
             response = client.models.generate_content(
-                model='gemini-2.5-flash',
+                model='gemini-3.8-flash',
                 contents=[img, prompt],
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
@@ -295,7 +295,6 @@ def procesar_pdf_con_vision(pdf_path, api_key):
                 data = json.loads(response.text)
                 if "preguntas" in data:
                     for q in data["preguntas"]:
-                        # Normalizar al formato que la app espera
                         enunciado = q.get("pregunta", "")
                         opciones_textos = q.get("opciones", [])
                         letra_corr = str(q.get("respuesta_correcta", "A")).strip().upper()
@@ -385,7 +384,6 @@ with st.sidebar:
         st.session_state.modo_oscuro = not st.session_state.modo_oscuro
         st.rerun()
 
-    # Configuración de API Key en barra lateral (por si no está en secrets)
     if not st.session_state["gemini_api_key"]:
         st.divider()
         user_input_key = st.text_input("Google Gemini API Key", type="password", help="Ingresa tu clave de AI Studio")
@@ -639,13 +637,11 @@ else:
         uploaded_file = st.file_uploader("Sube tu documento oficial en PDF", type=["pdf"])
         nombre_nueva_prueba = st.text_input("Título descriptivo de la prueba:", placeholder="Ej. Fisiología de Vuelo PTLA")
         
-        # Opción para forzar uso de Visión IA si el PDF es complejo o escaneado
         usar_vision_ia = st.checkbox("🧠 Utilizar Visión por IA (Recomendado para PDFs escaneados o complejos)", value=True)
         
         st.write("")
         if st.button("Procesar y Generar Banco", type="primary"):
             if uploaded_file and nombre_nueva_prueba:
-                # Guardar temporalmente el PDF
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
                     tmp_file.write(uploaded_file.getvalue())
                     tmp_path = tmp_file.name
