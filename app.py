@@ -15,11 +15,16 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- GESTIÓN DE TEMA (MODO OSCURO / CLARO MANUAL Y AUTOMÁTICO) ---
+# --- GESTIÓN DE TEMA Y ESTADOS DE SESIÓN ---
 if "modo_oscuro" not in st.session_state:
     st.session_state.modo_oscuro = False
+if "vista" not in st.session_state:
+    st.session_state.vista = "home"
+if "modo_estudio_data" not in st.session_state:
+    st.session_state.modo_estudio_data = None
+if "prueba_activa" not in st.session_state:
+    st.session_state.prueba_activa = None
 
-# Definición de variables CSS para ambos modos
 css_light = """
     :root {
         --bg-main: #f8fafc;
@@ -46,7 +51,6 @@ css_dark = """
     }
 """
 
-# Selección del tema activo según el estado de la sesión
 css_activo = css_dark if st.session_state.modo_oscuro else css_light
 
 st.markdown(f"""
@@ -57,7 +61,7 @@ st.markdown(f"""
         background-color: var(--bg-main);
         color: var(--text-main);
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    }
+    }}
 
     header {{visibility: hidden;}}
     
@@ -71,18 +75,18 @@ st.markdown(f"""
         letter-spacing: 0.3px;
         box-shadow: 0 4px 14px rgba(2, 132, 199, 0.3);
         transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    }
+    }}
     div.stButton > button:hover {{
         transform: translateY(-2px);
         box-shadow: 0 6px 20px rgba(56, 189, 248, 0.4);
-    }
+    }}
 
     div.stButton > button[kind="secondary"] {{
         background: var(--bg-card);
         border: 1px solid var(--border-color);
         color: var(--text-main);
         box-shadow: none;
-    }
+    }}
 
     .stTextInput input, .stSelectbox select, .stPasswordInput input {{
         background-color: var(--bg-card) !important;
@@ -106,22 +110,20 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-# Directorios y archivos de almacenamiento local
+# --- ALMACENAMIENTO ---
 DATA_DIR = "data_bancos"
 HISTORY_FILE = "historial_resultados.json"
 USERS_FILE = "usuarios.json"
 SESSION_FILE = "sesion_activa.json"
 
-if not os.path.exists(DATA_DIR):
-    os.makedirs(DATA_DIR)
+os.makedirs(DATA_DIR, exist_ok=True)
 
-# --- GESTIÓN DE USUARIOS Y AUTENTICACIÓN ---
 def cargar_usuarios():
     if os.path.exists(USERS_FILE):
         try:
             with open(USERS_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except:
+        except (json.JSONDecodeError, FileNotFoundError):
             return {}
     return {}
 
@@ -135,7 +137,7 @@ def cargar_sesion_persistida():
             with open(SESSION_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 return data.get("usuario")
-        except:
+        except (json.JSONDecodeError, FileNotFoundError):
             return None
     return None
 
@@ -147,7 +149,7 @@ def eliminar_sesion_persistida():
     if os.path.exists(SESSION_FILE):
         try:
             os.remove(SESSION_FILE)
-        except:
+        except OSError:
             pass
 
 if "usuario_actual" not in st.session_state:
@@ -158,12 +160,7 @@ if "usuario_actual" not in st.session_state:
     else:
         st.session_state.usuario_actual = None
 
-if "vista" not in st.session_state:
-    st.session_state.vista = "home"
-if "modo_estudio_data" not in st.session_state:
-    st.session_state.modo_estudio_data = None
-
-# --- FUNCIONES DE BANCOS DE PREGUNTAS ---
+# --- BANCOS DE PREGUNTAS ---
 def guardar_banco(nombre_id, data):
     ruta = os.path.join(DATA_DIR, f"{nombre_id}.json")
     if os.path.exists(ruta):
@@ -171,16 +168,17 @@ def guardar_banco(nombre_id, data):
             with open(ruta, "r", encoding="utf-8") as f:
                 banco_antiguo = json.load(f)
             
-            mapa_manuales = {}
-            for q_ant in banco_antiguo.get("preguntas", []):
-                if q_ant.get("correcta") is not None:
-                    mapa_manuales[q_ant["pregunta"].strip()] = q_ant["correcta"]
+            mapa_manuales = {
+                q_ant["pregunta"].strip(): q_ant["correcta"]
+                for q_ant in banco_antiguo.get("preguntas", [])
+                if q_ant.get("correcta") is not None
+            }
             
             for q_nueva in data.get("preguntas", []):
                 p_text = q_nueva["pregunta"].strip()
                 if p_text in mapa_manuales and q_nueva.get("correcta") is None:
                     q_nueva["correcta"] = mapa_manuales[p_text]
-        except:
+        except (json.JSONDecodeError, FileNotFoundError):
             pass
 
     with open(ruta, "w", encoding="utf-8") as f:
@@ -189,8 +187,11 @@ def guardar_banco(nombre_id, data):
 def cargar_banco(nombre_id):
     ruta = os.path.join(DATA_DIR, f"{nombre_id}.json")
     if os.path.exists(ruta):
-        with open(ruta, "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(ruta, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError):
+            return None
     return None
 
 def listar_bancos():
@@ -201,16 +202,19 @@ def listar_bancos():
 def eliminar_banco(nombre_id):
     ruta = os.path.join(DATA_DIR, f"{nombre_id}.json")
     if os.path.exists(ruta):
-        os.remove(ruta)
+        try:
+            os.remove(ruta)
+        except OSError:
+            pass
 
-# --- HISTORIAL DE RESULTADOS ---
+# --- HISTORIAL ---
 def guardar_resultado_historial(nombre_prueba, puntaje_pct, correctas, total):
     historial = []
     if os.path.exists(HISTORY_FILE):
         try:
             with open(HISTORY_FILE, "r", encoding="utf-8") as f:
                 historial = json.load(f)
-        except:
+        except (json.JSONDecodeError, FileNotFoundError):
             historial = []
     
     nuevo_registro = {
@@ -233,14 +237,14 @@ def obtener_historial_reciente():
     try:
         with open(HISTORY_FILE, "r", encoding="utf-8") as f:
             historial = json.load(f)
-    except:
+    except (json.JSONDecodeError, FileNotFoundError):
         return []
     
     limite_tiempo = datetime.now().timestamp() - (20 * 24 * 60 * 60)
     filtrado = [h for h in historial if h.get("timestamp", 0) >= limite_tiempo and h.get("usuario") == st.session_state.usuario_actual]
     return sorted(filtrado, key=lambda x: x["timestamp"], reverse=True)
 
-# --- PARSER ULTRA-EFICIENTE ---
+# --- PARSER PDF ---
 def extraer_preguntas_de_pdf(pdf_file):
     texto_completo = ""
     hojas_texto_estilo = []
@@ -252,15 +256,13 @@ def extraer_preguntas_de_pdf(pdf_file):
             texto_completo += t + f"\n--- PAGINA {idx+1} ---\n"
             
             try:
-                palabras = pagina.extract_words(extra_attrs=["fontname", "size", "x0", "top"])
-                hojas_texto_estilo.append(palabras)
-            except:
+                hojas_texto_estilo.append(pagina.extract_words(extra_attrs=["fontname", "size", "x0", "top"]))
+            except Exception:
                 hojas_texto_estilo.append([])
                 
             try:
-                formas = pagina.extract_rects() + pagina.extract_lines()
-                hojas_formas.append(formas)
-            except:
+                hojas_formas.append(pagina.extract_rects() + pagina.extract_lines())
+            except Exception:
                 hojas_formas.append([])
 
     mapa_claves_finales = {}
@@ -293,7 +295,9 @@ def extraer_preguntas_de_pdf(pdf_file):
             
         match_pagina_tag = re.search(r'--- PAGINA ([0-9]+) ---', bloque)
         if match_pagina_tag:
-            current_page = int(match_pagina_tag.group(1)) - 1
+            # Asegurar que el índice de página no exceda los límites extraídos
+            indice_extraido = int(match_pagina_tag.group(1)) - 1
+            current_page = min(indice_extraido, len(hojas_texto_estilo) - 1)
             bloque = re.sub(r'--- PAGINA [0-9]+ ---', '', bloque).strip()
             
         match_num = re.match(r'^([0-9]{1,3})\.-\s*(.*)', bloque, re.DOTALL)
@@ -342,23 +346,22 @@ def extraer_preguntas_de_pdf(pdf_file):
                 
                 es_marcada = any(s in linea for s in ['☑', '☒', 'X', '✔', '✓', 'x', '[x]', '(X)', '[X]', 'V', '*', '★']) or ('correcta' in linea.lower())
                 
-                if not es_marcada and hojas_texto_estilo and current_page < len(hojas_texto_estilo):
+                if not es_marcada and hojas_texto_estilo and current_page >= 0:
                     for w in hojas_texto_estilo[current_page]:
                         if w["text"] in linea and any(b_kw in w.get("fontname", "").lower() for b_kw in ["bold", "negrita", "black", "bd"]):
                             es_marcada = True
                             break
 
-                if not es_marcada and hojas_formas and current_page < len(hojas_formas):
-                    if current_page < len(hojas_texto_estilo):
-                        for w in hojas_texto_estilo[current_page]:
-                            if w["text"] in linea:
-                                wx, wy = w.get("x0", 0), w.get("top", 0)
-                                for forma in hojas_formas[current_page]:
-                                    fx = forma.get("x0", forma.get("x", 0))
-                                    fy = forma.get("top", forma.get("y", 0))
-                                    if abs(fx - wx) < 30 and abs(fy - wy) < 15:
-                                        es_marcada = True
-                                        break
+                if not es_marcada and hojas_formas and current_page >= 0:
+                    for w in hojas_texto_estilo[current_page]:
+                        if w["text"] in linea:
+                            wx, wy = w.get("x0", 0), w.get("top", 0)
+                            for forma in hojas_formas[current_page]:
+                                fx = forma.get("x0", forma.get("x", 0))
+                                fy = forma.get("top", forma.get("y", 0))
+                                if abs(fx - wx) < 30 and abs(fy - wy) < 15:
+                                    es_marcada = True
+                                    break
 
                 if not alt_actual_letra:
                     existentes = list(mapa_alts.keys())
@@ -478,11 +481,10 @@ datos_usuario = usuarios_db.get(st.session_state.usuario_actual, {"nombre": "Pil
 
 # --- BARRA LATERAL ---
 with st.sidebar:
-    st.markdown(f"### 👨‍✈️️ {datos_usuario['nombre']}")
+    st.markdown(f"### 👨‍✈ {datos_usuario['nombre']}")
     st.caption("Piloto en Entrenamiento")
     st.divider()
     
-    # Botón dinámico de Modo Oscuro / Claro en la barra lateral
     texto_modo = "☀️ Cambiar a Modo Claro" if st.session_state.modo_oscuro else "🌙 Cambiar a Modo Oscuro"
     if st.button(texto_modo, use_container_width=True, type="secondary"):
         st.session_state.modo_oscuro = not st.session_state.modo_oscuro
@@ -504,7 +506,7 @@ with st.sidebar:
         st.rerun()
         
     st.divider()
-    st.info("💡 **Consejo:** Utiliza el botón de engranaje (⚙️) durante tus exámenes para ajustar respuestas en tiempo real.")
+    st.info("💡 **Consejo:** Utiliza el botón de engranaje (⚙️️) durante tus exámenes para ajustar respuestas en tiempo real.")
     st.write("")
     
     if st.button("🚪 Cerrar Sesión", type="secondary", use_container_width=True):
@@ -528,15 +530,16 @@ if st.session_state.vista == "perfil":
             if st.form_submit_button("Guardar Cambios", type="primary"):
                 email_viejo = st.session_state.usuario_actual
                 nuevo_email_limpio = nuevo_email.strip().lower()
+                
                 if nuevo_email_limpio != email_viejo:
                     if nuevo_email_limpio in usuarios_db:
                         st.error("El correo ya está registrado.")
                     else:
                         usuarios_db[nuevo_email_limpio] = {"nombre": nuevo_nombre, "email": nuevo_email_limpio, "password": nueva_pass}
                         del usuarios_db[email_viejo]
+                        guardar_usuarios(usuarios_db)
                         st.session_state.usuario_actual = nuevo_email_limpio
                         guardar_sesion_persistida(nuevo_email_limpio)
-                        guardar_usuarios(usuarios_db)
                         st.success("¡Perfil actualizado con éxito!")
                         st.rerun()
                 else:
@@ -560,7 +563,8 @@ elif st.session_state.vista == "historial":
         df_hist = pd.DataFrame(historial)
         col_m1, col_m2 = st.columns(2)
         with col_m1:
-            st.metric(label="Promedio General de Aciertos", value=f"{df_hist['puntaje'].mean():.1f}%")
+            promedio = df_hist['puntaje'].mean()
+            st.metric(label="Promedio General de Aciertos", value=f"{promedio:.1f}%")
         with col_m2:
             st.metric(label="Pruebas Realizadas", value=len(df_hist))
             
@@ -583,6 +587,13 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     idx_actual = estudio["idx_actual"]
     b_id_actual = estudio.get("b_id")
     
+    if not preguntas:
+        st.error("Este banco de preguntas está vacío.")
+        if st.button("Volver al Menú Principal"):
+            st.session_state.vista = "home"
+            st.rerun()
+        st.stop()
+        
     if "respuestas_usuario" not in estudio:
         estudio["respuestas_usuario"] = {}
     resp_dict = estudio["respuestas_usuario"]
@@ -592,7 +603,6 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     respondidas_fail = sum(1 for k, v in resp_dict.items() if v.get("estado") in ["incorrecta", "omitida"])
     puntaje_porcentaje = int((respondidas_ok / total_preguntas) * 100) if total_preguntas > 0 else 0
     
-    # Cabecera dentro de la prueba con opciones y botón de modo oscuro integrado
     col_top1, col_top_gear, col_top_theme, col_top2 = st.columns([3.5, 0.5, 0.8, 2.2])
     with col_top1:
         st.markdown(f"**Q: {idx_actual + 1}/{total_preguntas}** &nbsp;|&nbsp; ✅ {respondidas_ok} &nbsp;|&nbsp; ❌ {respondidas_fail} &nbsp;|&nbsp; 📈 **{puntaje_porcentaje}%**")
@@ -603,7 +613,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
             q_actual_pop = preguntas[idx_actual]
             opciones_textos_pop = [f"{alt['letra']}.- {alt['texto']}" for alt in q_actual_pop["alternativas"]]
             current_correct = q_actual_pop.get("correcta", 0)
-            if current_correct is None:
+            if current_correct is None or current_correct >= len(opciones_textos_pop):
                 current_correct = 0
             
             nueva_corr_sel = st.selectbox(
@@ -625,7 +635,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
                 st.rerun()
 
     with col_top_theme:
-        icono_tema = "☀️" if st.session_state.modo_oscuro else "🌙"
+        icono_tema = "☀️️" if st.session_state.modo_oscuro else "🌙"
         if st.button(icono_tema, help="Cambiar tema visual", key="btn_toggle_theme_study"):
             st.session_state.modo_oscuro = not st.session_state.modo_oscuro
             st.rerun()
@@ -685,14 +695,14 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
 
     if corregido:
         idx_correcta = q_actual.get("correcta")
-        if idx_correcta is not None:
+        if idx_correcta is not None and idx_correcta < len(q_actual["alternativas"]):
             letra_correcta = q_actual["alternativas"][idx_correcta]["letra"]
             if estado_actual_q["estado"] == "correcta":
                 st.success("🎯 ¡Correcto! Has acertado la respuesta.")
             else:
                 st.error(f"❌ Incorrecto. La respuesta correcta es la alternativa **{letra_correcta}**.")
         else:
-            st.warning("Esta pregunta aún no tiene respuesta asignada.")
+            st.warning("Esta pregunta aún no tiene respuesta asignada válida.")
 
     st.write("")
     col_bot1, col_bot2, col_bot3 = st.columns([2, 4, 2])
@@ -715,7 +725,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
                 seleccion_actual = resp_dict[idx_actual].get("elegida")
                 if seleccion_actual is None:
                     st.warning("Selecciona una alternativa antes de continuar.")
-                elif idx_correcta is None:
+                elif idx_correcta is None or idx_correcta >= len(q_actual["alternativas"]):
                     st.error("Asigna primero la respuesta correcta usando el engranaje ⚙️.")
                 else:
                     es_correcta = (seleccion_actual == idx_correcta)
@@ -739,7 +749,6 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
 
 # --- VISTA: HOME ---
 else:
-    # Cabecera con botón de cambio de modo en la página principal
     col_h_title, col_h_btn = st.columns([5, 1])
     with col_h_title:
         st.title("📚 Centro de Pruebas y Bancos de Preguntas")
@@ -796,25 +805,29 @@ else:
                         datos_banco["nombre"] = nuevo_nombre
                         guardar_banco(b_id, datos_banco)
                 with col_h2:
-                    st.markdown(f"📋 **{len(datos_banco.get('preguntas', []))}** preguntas")
+                    cantidad_q = len(datos_banco.get('preguntas', []))
+                    st.markdown(f"📋 **{cantidad_q}** preguntas")
                 with col_h3:
                     modo_aleatorio = st.checkbox("Modo Aleatorio", value=True, key=f"rnd_{b_id}")
                 with col_h4:
                     subcol1, subcol2 = st.columns(2)
                     with subcol1:
                         if st.button("🚀 Iniciar", key=f"btn_start_{b_id}", use_container_width=True):
-                            lista_q = datos_banco["preguntas"].copy()
-                            if modo_aleatorio:
-                                random.shuffle(lista_q)
-                            st.session_state.modo_estudio_data = {
-                                "b_id": b_id,
-                                "nombre_prueba": datos_banco.get("nombre", b_id),
-                                "preguntas": lista_q,
-                                "idx_actual": 0,
-                                "respuestas_usuario": {}
-                            }
-                            st.session_state.vista = "estudio"
-                            st.rerun()
+                            if cantidad_q > 0:
+                                lista_q = datos_banco["preguntas"].copy()
+                                if modo_aleatorio:
+                                    random.shuffle(lista_q)
+                                st.session_state.modo_estudio_data = {
+                                    "b_id": b_id,
+                                    "nombre_prueba": datos_banco.get("nombre", b_id),
+                                    "preguntas": lista_q,
+                                    "idx_actual": 0,
+                                    "respuestas_usuario": {}
+                                }
+                                st.session_state.vista = "estudio"
+                                st.rerun()
+                            else:
+                                st.error("El banco está vacío.")
                     with subcol2:
                         if st.button("🗑️", key=f"btn_del_{b_id}", type="secondary", use_container_width=True, help="Eliminar banco"):
                             eliminar_banco(b_id)
