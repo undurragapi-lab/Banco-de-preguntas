@@ -80,7 +80,7 @@ def obtener_historial_reciente():
     filtrado = [h for h in historial if h.get("timestamp", 0) >= limite_tiempo]
     return sorted(filtrado, key=lambda x: x["timestamp"], reverse=True)
 
-# Parser de PDF para extraer preguntas, alternativas y respuesta correcta marcada
+# Parser inteligente de PDF: detecta preguntas, alternativas y la alternativa marcada como correcta
 def extraer_preguntas_de_pdf(pdf_file):
     reader = PdfReader(pdf_file)
     texto_completo = ""
@@ -89,81 +89,86 @@ def extraer_preguntas_de_pdf(pdf_file):
         if t:
             texto_completo += t + "\n"
 
-    # Expresión regular orientada a detectar preguntas tipo formato aeronáutico/Daypo
-    # Busca patrones como "1.- Pregunta..." o "Pregunta..." y sus alternativas A, B, C, D con marcas (ej. o, •, [x], (*))
-    bloques = re.split(r'\n(?=[0-9]{1,3}[\.\-]\s|Pregunta\s+[0-9]+)', texto_completo)
-    
+    texto_completo = re.sub(r'\r\n', '\n', texto_completo)
+
+    # Fraccionar el texto usando la numeración de las preguntas (ej. "1.-", "2.-")
+    bloques = re.split(r'\n(?=[0-9]{1,3}\.-\s)', texto_completo)
+    if len(bloques) <= 1:
+        bloques = re.split(r'(?=[0-9]{1,3}\.-\s)', texto_completo)
+
     preguntas_parsed = []
     
     for bloque in bloques:
-        if len(bloque.strip()) < 10:
+        bloque = bloque.strip()
+        if len(bloque) < 15:
             continue
             
-        lineas = bloque.strip().split('\n')
-        enunciado_lineas = []
-        alternativas = []
-        correcta_idx = None
+        match_num = re.match(r'^([0-9]{1,3})\.-\s*(.*)', bloque, re.DOTALL)
+        if not match_num:
+            continue
+            
+        cuerpo_bloque = match_num.group(2)
         
-        capturando_alt = False
-        for linea in lineas:
-            # Detectar alternativas (ej. A.-, A), a), etc.)
-            match_alt = re.match(r'^([A-D])[\.\-\)]\s*(.*)', linea.strip(), re.IGNORECASE)
-            if match_alt:
-                capturando_alt = True
-                letra = match_alt.group(1).upper()
-                texto_alt = match_alt.group(2)
-                
-                # Detectar si la alternativa está marcada como respuesta correcta
-                # Buscamos símbolos comunes de selección en texto extraído (•, (*), [x], o círculos rellenos)
-                es_correcta = False
-                if any(simbolo in linea for simbolo in ["(•)", "[x]", "(X)", "•", "(*)"]):
-                    es_correcta = True
-                
-                idx = ord(letra) - ord('A')
-                if es_correcta:
-                    correcta_idx = idx
-                
-                alternativas.append({"letra": letra, "texto": texto_alt, "marcada": es_correcta})
-            else:
-                if not capturando_alt:
-                    enunciado_lineas.append(linea)
-                else:
-                    # Si ya empezamos alternativas pero hay líneas largas continuas
-                    if alternativas:
-                        alternativas[-1]["texto"] += " " + linea.strip()
+        # Dividir el bloque basándose en las alternativas A.-, B.-, C.-, D.-
+        partes_alt = re.split(r'\b([A-D])\.-\s*', cuerpo_bloque)
+        
+        if len(partes_alt) < 3:
+            continue
+            
+        enunciado = partes_alt[0].strip()
+        # Limpiar cabeceras de página repetitivas
+        enunciado = re.sub(r'Materia\s*:.*?Cantidad de Preguntas\s*:\s*[0-9]+', '', enunciado).strip()
+        
+        alternativas = []
+        correcta_idx = 0
+        encontro_marca = False
+        
+        i = 1
+        while i < len(partes_alt) - 1:
+            letra = partes_alt[i].upper()
+            texto_alt = partes_alt[i+1].strip()
+            
+            # Limpiar desbordes de texto hacia la siguiente pregunta
+            texto_alt = re.sub(r'\s+[0-9]{1,3}\.-.*$', '', texto_alt)
+            
+            # Detectar si esta alternativa tiene la marca de respuesta correcta (ej. •, (•), [x], etc.)
+            es_correcta = False
+            simbolos_marca = ["(•)", "[x]", "(X)", "•", "(*)"]
+            if any(simbolo in texto_alt or simbolo in partes_alt[i] for simbolo in simbolos_marca):
+                es_correcta = True
+                encontro_marca = True
+                for s in simbolos_marca:
+                    texto_alt = texto_alt.replace(s, "")
+                texto_alt = texto_alt.strip()
 
-        enunciado = " ".join(enunciado_lineas).strip()
-        # Limpiar numeración inicial del enunciado si la trae
-        enunciado = re.sub(r'^[0-9]{1,3}[\.\-]\s*', '', enunciado)
+            idx = ord(letra) - ord('A')
+            if es_correcta:
+                correcta_idx = idx
+                
+            alternativas.append({
+                "letra": letra,
+                "texto": texto_alt,
+                "marcada": es_correcta
+            })
+            i += 2
+
+        # Si el PDF no traía marcas explícitas pero tiene alternativas, por defecto dejamos la primera
+        if not encontro_marca and alternativas:
+            correcta_idx = 0
+            alternativas[0]["marcada"] = True
 
         if enunciado and len(alternativas) >= 2:
-            # Si no se detectó marca explícita por caracteres, asumimos la primera por defecto o 0
-            if correcta_idx is None:
-                correcta_idx = 0 
             preguntas_parsed.append({
                 "pregunta": enunciado,
                 "alternativas": alternativas,
                 "correcta": correcta_idx
             })
-            
-    # Si el parser por bloques estrictos no arrojó resultados, aplicamos un parser de respaldo genérico
-    if not preguntas_parsed:
-        # Generador de prueba genérico para estructurar el contenido si el PDF tiene otro formato
-        parrafos = texto_completo.split('\n\n')
-        temp_alts = [{"letra": "A", "texto": "Opción Verdadera", "marcada": True}, {"letra": "B", "texto": "Opción Falsa", "marcada": False}]
-        for i, p in enumerate(parrafos[:20]): # Máximo 20 de respaldo si es muy plano
-            if len(p.strip()) > 15:
-                preguntas_parsed.append({
-                    "pregunta": p.strip(),
-                    "alternativas": temp_alts,
-                    "correcta": 0
-                })
 
     return preguntas_parsed
 
 # --- GESTIÓN DE ESTADOS EN STREAMLIT ---
 if "vista" not in st.session_state:
-    st.session_state.vista = "home" # "home", "estudio", "historial"
+    st.session_state.vista = "home"
 if "prueba_activa" not in st.session_state:
     st.session_state.prueba_activa = None
 if "modo_estudio_data" not in st.session_state:
@@ -183,7 +188,7 @@ with st.sidebar:
         
     st.divider()
     st.markdown("### ✈️ Panel de Control")
-    st.info("Sube tus bancos en PDF, selecciona aleatoriedad y estudia como en Daypo / Prepware.")
+    st.info("Sube tus bancos en PDF, selecciona aleatoriedad y estudia pregunta por página como en Daypo / Prepware.")
 
 # ==================== VISTA: HISTORIAL ====================
 if st.session_state.vista == "historial":
@@ -194,8 +199,6 @@ if st.session_state.vista == "historial":
         st.warning("No hay registros de exámenes realizados en los últimos 20 días.")
     else:
         df_hist = pd.DataFrame(historial)
-        
-        # Calcular promedio general de los últimos 20 días
         promedio_general = df_hist["puntaje"].mean()
         st.metric(label="Promedio General de Rendimiento", value=f"{promedio_general:.1f}%")
         
@@ -213,34 +216,32 @@ if st.session_state.vista == "historial":
         st.session_state.vista = "home"
         st.rerun()
 
-# ==================== VISTA: MODO ESTUDIO ====================
+# ==================== VISTA: MODO ESTUDIO (UNA PREGUNTA POR PÁGINA) ====================
 elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     estudio = st.session_state.modo_estudio_data
     preguntas = estudio["preguntas"]
     idx_actual = estudio["idx_actual"]
     
-    # Inicializar estados de respuestas si no existen
     if "respuestas_usuario" not in estudio:
-        estudio["respuestas_usuario"] = {} # {idx: {"elegida": int, "estado": "correcta"/"incorrecta"/"omitida", "corregido": bool}}
+        estudio["respuestas_usuario"] = {}
     
     resp_dict = estudio["respuestas_usuario"]
 
-    # --- BARRA SUPERIOR DE ESTADÍSTICAS ---
     total_preguntas = len(preguntas)
     respondidas_ok = sum(1 for k, v in resp_dict.items() if v.get("estado") == "correcta")
     respondidas_fail = sum(1 for k, v in resp_dict.items() if v.get("estado") == "incorrecta")
     
-    col_top1, col_top2 = st.columns([6, 1])
+    # --- BARRA SUPERIOR DE ESTADÍSTICAS Y BOTÓN DE ÍNDICE (ESQUINA SUPERIOR DERECHA) ---
+    col_top1, col_top2 = st.columns([5, 2])
     with col_top1:
-        st.markdown(f"### 📋 Pregunta {idx_actual + 1} de {total_preguntas} &nbsp;&nbsp;|&nbsp;&nbsp; ✅ Buenas: {respondidas_ok} &nbsp;&nbsp;|&nbsp;&nbsp; ❌ Malas: {respondidas_fail}")
+        st.markdown(f"### 📋 Pregunta {idx_actual + 1} de {total_preguntas} &nbsp;|&nbsp; ✅ Buenas: {respondidas_ok} &nbsp;|&nbsp; ❌ Malas: {respondidas_fail}")
     
     with col_top2:
-        # Botón superior derecho para desplegar cuadrícula de números
-        with st.popover("🔢 Índice"):
+        with st.popover("🔢 Cuadrícula de Preguntas"):
             st.markdown("#### Selector de Preguntas")
+            st.caption("🔵 Actual | 🟢 Correcta | 🔴 Incorrecta | ⚪ Omitida | ⚫ Sin responder")
             cols_grid = st.columns(5)
             for i in range(total_preguntas):
-                # Determinar color/estado del borde
                 estado_q = resp_dict.get(i, {}).get("estado")
                 if i == idx_actual:
                     label_btn = f"🔵 {i+1}"
@@ -261,18 +262,15 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     st.progress((idx_actual + 1) / total_preguntas)
     st.divider()
 
-    # --- PREGUNTA Y ALTERNATIVAS ACTUALES ---
+    # --- MOSTRAR SOLO UNA PREGUNTA Y SUS ALTERNATIVAS ---
     q_actual = preguntas[idx_actual]
     st.markdown(f"#### {idx_actual + 1}.- {q_actual['pregunta']}")
     
-    # Estado actual de esta pregunta
     estado_actual_q = resp_dict.get(idx_actual, {})
     corregido = estado_actual_q.get("corregido", False)
     seleccion_previa = estado_actual_q.get("elegida", None)
     
-    # Formulario interactivo de alternativas
     opciones_textos = [f"{alt['letra']}.- {alt['texto']}" for alt in q_actual["alternativas"]]
-    
     default_selection = seleccion_previa if seleccion_previa is not None else 0
     
     seleccion = st.radio(
@@ -284,19 +282,18 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
         disabled=corregido
     )
     
-    # Guardar selección temporal del usuario
     if idx_actual not in resp_dict:
         resp_dict[idx_actual] = {"elegida": seleccion, "estado": None, "corregido": False}
     else:
         resp_dict[idx_actual]["elegida"] = seleccion
 
-    # Mostrar retroalimentación visual si ya fue corregido (Siguiente presionado)
+    # Retroalimentación visual al corregir
     if corregido:
         idx_correcta = q_actual["correcta"]
         if estado_actual_q["estado"] == "correcta":
-            st.success("¡Correcto! Tiquet verde en la respuesta.")
+            st.success("¡Correcto! Respuesta acertada.")
         else:
-            st.error("Incorrecto. Marcado con equis roja en tu respuesta y tiquet verde en la correcta.")
+            st.error("Incorrecto.")
             
         for i_alt, alt in enumerate(q_actual["alternativas"]):
             if i_alt == idx_correcta:
@@ -307,7 +304,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     st.write("")
     col_bot1, col_bot2, col_bot3 = st.columns([2, 4, 2])
 
-    # Parte inferior izquierda: Botón Omitir
+    # Parte inferior izquierda: Botón Omitir (pasa sin corregir y sin marcar en el cuadro)
     with col_bot1:
         if st.button("⬅️ Omitir", use_container_width=True):
             resp_dict[idx_actual] = {"elegida": seleccion, "estado": "omitida", "corregido": True}
@@ -317,12 +314,11 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
             else:
                 st.warning("Has llegado al final de la prueba.")
 
-    # Parte inferior derecha: Botón Siguiente / Corregir
+    # Parte inferior derecha: Botón Contestar / Corregir y Siguiente
     with col_bot3:
         texto_boton = "Siguiente ➡️" if corregido else "Contestar / Corregir"
         if st.button(texto_boton, type="primary", use_container_width=True):
             if not corregido:
-                # Corregir
                 idx_correcta = q_actual["correcta"]
                 es_correcta = (seleccion == idx_correcta)
                 estado_str = "correcta" if es_correcta else "incorrecta"
@@ -333,12 +329,10 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
                 }
                 st.rerun()
             else:
-                # Pasar a la siguiente pregunta
                 if idx_actual < total_preguntas - 1:
                     estudio["idx_actual"] += 1
                     st.rerun()
                 else:
-                    # Fin del examen, guardar en historial
                     puntaje_final = int((respondidas_ok / total_preguntas) * 100) if total_preguntas > 0 else 0
                     guardar_resultado_historial(estudio["nombre_prueba"], puntaje_final, respondidas_ok, total_preguntas)
                     st.success(f"🎉 ¡Examen finalizado! Tu puntaje fue de {puntaje_final}% ({respondidas_ok}/{total_preguntas} correctas). Guardado en el historial.")
@@ -355,7 +349,6 @@ else:
     
     st.divider()
 
-    # Sección superior: Cargar documentos PDF y crear nuevas pruebas
     st.subheader("➕ Crear Nueva Prueba desde PDF")
     uploaded_file = st.file_uploader("Sube tu archivo PDF con preguntas", type=["pdf"])
     nombre_nueva_prueba = st.text_input("Nombre de la prueba:", placeholder="Ej. Reglamentación PTLA Avión")
@@ -365,7 +358,6 @@ else:
             with st.spinner("Leyendo PDF y extrayendo preguntas y alternativas..."):
                 preguntas_extraidas = extraer_preguntas_de_pdf(uploaded_file)
                 if preguntas_extraidas:
-                    # Guardar banco
                     id_limpio = re.sub(r'[^a-zA-Z0-9_\-]', '_', nombre_nueva_prueba)
                     guardar_banco(id_limpio, {
                         "nombre": nombre_nueva_prueba,
@@ -380,7 +372,6 @@ else:
 
     st.divider()
 
-    # Listado de todas las pruebas guardadas
     st.subheader("📂 Tus Pruebas Guardadas")
     bancos = listar_bancos()
 
@@ -395,7 +386,6 @@ else:
             col_h1, col_h2, col_h3, col_h4 = st.columns([3, 2, 2, 2])
             
             with col_h1:
-                # Edición de nombres de pruebas
                 nuevo_nombre = st.text_input(f"Editar {b_id}", value=datos_banco.get("nombre", b_id), key=f"edit_{b_id}", label_visibility="collapsed")
                 if nuevo_nombre != datos_banco.get("nombre", b_id):
                     datos_banco["nombre"] = nuevo_nombre
@@ -405,7 +395,6 @@ else:
                 st.markdown(f"**Preguntas:** {len(datos_banco.get('preguntas', []))}")
 
             with col_h3:
-                # Opción de modo aleatorio
                 modo_aleatorio = st.checkbox("Modo Aleatorio", value=True, key=f"rnd_{b_id}")
 
             with col_h4:
