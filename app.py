@@ -228,7 +228,7 @@ def obtener_historial_reciente():
         return []
     
     limite_tiempo = datetime.now().timestamp() - (20 * 24 * 60 * 60)
-    filtrado = [h for h in historial if h.get("timestamp", 0) >= limite_tiempo and h.get("usuario"] == st.session_state.usuario_actual]
+    filtrado = [h for h in historial if h.get("timestamp", 0) >= limite_tiempo and h.get("usuario") == st.session_state.usuario_actual]
     return sorted(filtrado, key=lambda x: x["timestamp"], reverse=True)
 
 # --- PARSER PDF MEJORADO Y ROBUSTO ---
@@ -248,12 +248,10 @@ def extraer_preguntas_de_pdf(pdf_file):
             en_seccion_claves = True
         
         if en_seccion_claves:
-            # Captura formatos tipo "1. A", "1-A", "1) A", "1: A"
             matches_claves = re.findall(r'\b([0-9]{1,3})[\.\-\)\:]\s*([A-D])\b', linea, re.IGNORECASE)
             for num_str, letra in matches_claves:
                 mapa_claves_finales[int(num_str)] = letra.upper()
 
-    # Patrón flexible para separar preguntas (ej: "1.-", "1.", "Pregunta 1")
     bloques = re.split(r'\n(?=(?:[0-9]{1,3}\.-\s|[0-9]{1,3}\.\s|pregunta\s+[0-9]{1,3}))', texto_completo, flags=re.IGNORECASE)
     preguntas_parsed = []
     
@@ -629,7 +627,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
                 if seleccion_actual is None:
                     st.warning("Selecciona una alternativa antes de continuar.")
                 elif idx_correcta is None or idx_correcta >= len(q_actual["alternativas"]):
-                    st.error("Asigna primero la respuesta correcta usando el engranaje ⚙️️.")
+                    st.error("Asigna primero la respuesta correcta usando el engranaje ⚙.")
                 else:
                     es_correcta = (seleccion_actual == idx_correcta)
                     resp_dict[idx_actual]["estado"] = "correcta" if es_correcta else "incorrecta"
@@ -696,7 +694,7 @@ else:
             with col2:
                 modo_aleatorio = st.checkbox("🔀 Orden Aleatorio", key=f"rnd_{b_id}")
             with col3:
-                st.write("") # Alineación visual
+                st.write("")
                 if st.button("🚀 Iniciar", key=f"start_{b_id}", use_container_width=True):
                     preg = list(banco_data.get("preguntas", []))
                     if modo_aleatorio:
