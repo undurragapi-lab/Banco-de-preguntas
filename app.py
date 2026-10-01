@@ -208,6 +208,16 @@ def cargar_banco(nombre_id):
             return None
     return None
 
+def eliminar_banco(nombre_id):
+    ruta = os.path.join(DATA_DIR, f"{nombre_id}.json")
+    if os.path.exists(ruta):
+        try:
+            os.remove(ruta)
+            return True
+        except:
+            return False
+    return False
+
 def listar_bancos():
     if not os.path.exists(DATA_DIR):
         return []
@@ -287,7 +297,7 @@ def procesar_pagina_individual(args):
                     contents=[img, prompt],
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
-                        temperature=0.0 # Temperatura en 0 para máxima precisión y menor alucinación
+                        temperature=0.0
                     ),
                 )
                 if response and response.text:
@@ -338,10 +348,8 @@ def procesar_pagina_individual(args):
     return i, preguntas_pagina
 
 def procesar_pdf_con_vision(pdf_path, api_key):
-    """Convierte el PDF a alta resolución y procesa todas las páginas en paralelo con máxima cobertura."""
     try:
         with st.spinner("🔄 Renderizando páginas del documento para análisis exhaustivo..."):
-            # Usamos DPI 200 para asegurar que textos pequeños o pautas en tablas se lean con claridad absoluta
             imagenes = convert_from_path(pdf_path, dpi=200)
         
         total_paginas = len(imagenes)
@@ -620,7 +628,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
         resp_dict[idx_actual]["elegida"] = seleccion_radio if seleccion_radio != -1 else None
 
     if q_actual.get("correcta") is None:
-        st.warning("⚠️ Esta pregunta no tiene respuesta correcta detectada. Haz clic en el engranaje superior ⚙️️ para asignarla.")
+        st.warning("⚠️ Esta pregunta no tiene respuesta correcta detectada. Haz clic en el engranaje superior ⚙ para asignarla.")
 
     if corregido:
         idx_correcta = q_actual.get("correcta")
@@ -724,13 +732,13 @@ else:
         if not banco_data: continue
         
         with st.container():
-            col1, col2, col3 = st.columns([3, 1.5, 1])
+            col1, col_chk, col2, col3 = st.columns([2.5, 1.2, 1, 1])
             with col1:
                 st.markdown(f"**{banco_data.get('nombre', b_id)}**")
                 st.caption(f"{len(banco_data.get('preguntas', []))} preguntas")
+            with col_chk:
+                modo_aleatorio = st.checkbox("🔀 Aleatorio", key=f"rnd_{b_id}")
             with col2:
-                modo_aleatorio = st.checkbox("🔀 Orden Aleatorio", key=f"rnd_{b_id}")
-            with col3:
                 st.write("")
                 if st.button("🚀 Iniciar", key=f"start_{b_id}", use_container_width=True):
                     preg = list(banco_data.get("preguntas", []))
@@ -746,4 +754,14 @@ else:
                         }
                         st.session_state.vista = "estudio"
                         st.rerun()
+            with col3:
+                st.write("")
+                with st.popover("🗑️️ Eliminar", help="Eliminar permanentemente este banco"):
+                    st.markdown(f"¿Borrar **{banco_data.get('nombre', b_id)}**?")
+                    if st.button("Confirmar Borrado", key=f"del_confirm_{b_id}", type="primary", use_container_width=True):
+                        if eliminar_banco(b_id):
+                            st.success("Banco eliminado.")
+                            st.rerun()
+                        else:
+                            st.error("No se pudo eliminar el archivo.")
         st.divider()
