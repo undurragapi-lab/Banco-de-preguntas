@@ -7,7 +7,7 @@ import streamlit as st
 import pandas as pd
 import pdfplumber
 
-# Configuración de la página
+# --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
     page_title="AeroStudio Pro - Simulador de Vuelo",
     page_icon="✈️",
@@ -15,9 +15,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- GESTIÓN DE TEMA Y ESTADOS DE SESIÓN ---
+# --- GESTIÓN DE ESTADOS DE SESIÓN ---
 if "modo_oscuro" not in st.session_state:
-    st.session_state.modo_oscuro = False
+    st.session_state.modo_oscuro = True # Por defecto en modo oscuro mejorado
 if "vista" not in st.session_state:
     st.session_state.vista = "home"
 if "modo_estudio_data" not in st.session_state:
@@ -25,6 +25,7 @@ if "modo_estudio_data" not in st.session_state:
 if "prueba_activa" not in st.session_state:
     st.session_state.prueba_activa = None
 
+# --- CSS MEJORADO (DISEÑO UX/UI) ---
 css_light = """
     :root {
         --bg-main: #f8fafc;
@@ -33,21 +34,21 @@ css_light = """
         --accent-hover: #0369a1;
         --text-main: #0f172a;
         --text-muted: #64748b;
-        --border-color: #cbd5e1;
+        --border-color: #e2e8f0;
         --sidebar-bg: #f1f5f9;
     }
 """
 
 css_dark = """
     :root {
-        --bg-main: #0f172a;
-        --bg-card: #1e293b;
-        --accent-blue: #38bdf8;
-        --accent-hover: #0ea5e9;
-        --text-main: #f8fafc;
-        --text-muted: #94a3b8;
-        --border-color: #334155;
-        --sidebar-bg: #0b0f19;
+        --bg-main: #09090b;
+        --bg-card: #18181b;
+        --accent-blue: #0ea5e9;
+        --accent-hover: #0284c7;
+        --text-main: #f4f4f5;
+        --text-muted: #a1a1aa;
+        --border-color: #27272a;
+        --sidebar-bg: #09090b;
     }
 """
 
@@ -69,16 +70,17 @@ st.markdown(f"""
         background: linear-gradient(135deg, var(--accent-blue) 0%, var(--accent-hover) 100%);
         color: white;
         border: none;
-        border-radius: 10px;
+        border-radius: 8px;
         padding: 0.6rem 1.2rem;
         font-weight: 600;
         letter-spacing: 0.3px;
-        box-shadow: 0 4px 14px rgba(2, 132, 199, 0.3);
-        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        box-shadow: 0 4px 12px rgba(2, 132, 199, 0.2);
+        transition: all 0.2s ease-in-out;
     }}
+    
     div.stButton > button:hover {{
         transform: translateY(-2px);
-        box-shadow: 0 6px 20px rgba(56, 189, 248, 0.4);
+        box-shadow: 0 6px 16px rgba(14, 165, 233, 0.3);
     }}
 
     div.stButton > button[kind="secondary"] {{
@@ -92,8 +94,8 @@ st.markdown(f"""
         background-color: var(--bg-card) !important;
         color: var(--text-main) !important;
         border: 1px solid var(--border-color) !important;
-        border-radius: 10px !important;
-        padding: 0.5rem 0.75rem !important;
+        border-radius: 8px !important;
+        padding: 0.6rem 1rem !important;
     }}
 
     section[data-testid="stSidebar"] {{
@@ -104,8 +106,17 @@ st.markdown(f"""
     div[data-testid="metric-container"] {{
         background-color: var(--bg-card);
         border: 1px solid var(--border-color);
-        padding: 1rem;
-        border-radius: 12px;
+        padding: 1.2rem;
+        border-radius: 10px;
+    }}
+    
+    .stRadio label {{
+        padding: 10px;
+        border-radius: 8px;
+        transition: background 0.2s;
+    }}
+    .stRadio label:hover {{
+        background-color: var(--border-color);
     }}
 </style>
 """, unsafe_allow_html=True)
@@ -135,9 +146,8 @@ def cargar_sesion_persistida():
     if os.path.exists(SESSION_FILE):
         try:
             with open(SESSION_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return data.get("usuario")
-        except (json.JSONDecodeError, FileNotFoundError):
+                return json.load(f).get("usuario")
+        except:
             return None
     return None
 
@@ -167,18 +177,16 @@ def guardar_banco(nombre_id, data):
         try:
             with open(ruta, "r", encoding="utf-8") as f:
                 banco_antiguo = json.load(f)
-            
             mapa_manuales = {
                 q_ant["pregunta"].strip(): q_ant["correcta"]
                 for q_ant in banco_antiguo.get("preguntas", [])
                 if q_ant.get("correcta") is not None
             }
-            
             for q_nueva in data.get("preguntas", []):
                 p_text = q_nueva["pregunta"].strip()
                 if p_text in mapa_manuales and q_nueva.get("correcta") is None:
                     q_nueva["correcta"] = mapa_manuales[p_text]
-        except (json.JSONDecodeError, FileNotFoundError):
+        except:
             pass
 
     with open(ruta, "w", encoding="utf-8") as f:
@@ -190,7 +198,7 @@ def cargar_banco(nombre_id):
         try:
             with open(ruta, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError):
+        except:
             return None
     return None
 
@@ -199,14 +207,6 @@ def listar_bancos():
         return []
     return [f.replace(".json", "") for f in os.listdir(DATA_DIR) if f.endswith(".json")]
 
-def eliminar_banco(nombre_id):
-    ruta = os.path.join(DATA_DIR, f"{nombre_id}.json")
-    if os.path.exists(ruta):
-        try:
-            os.remove(ruta)
-        except OSError:
-            pass
-
 # --- HISTORIAL ---
 def guardar_resultado_historial(nombre_prueba, puntaje_pct, correctas, total):
     historial = []
@@ -214,10 +214,10 @@ def guardar_resultado_historial(nombre_prueba, puntaje_pct, correctas, total):
         try:
             with open(HISTORY_FILE, "r", encoding="utf-8") as f:
                 historial = json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError):
+        except:
             historial = []
     
-    nuevo_registro = {
+    historial.append({
         "usuario": st.session_state.usuario_actual,
         "fecha": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "timestamp": datetime.now().timestamp(),
@@ -225,8 +225,7 @@ def guardar_resultado_historial(nombre_prueba, puntaje_pct, correctas, total):
         "puntaje": puntaje_pct,
         "correctas": correctas,
         "total": total
-    }
-    historial.append(nuevo_registro)
+    })
     
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(historial, f, ensure_ascii=False, indent=4)
@@ -237,68 +236,45 @@ def obtener_historial_reciente():
     try:
         with open(HISTORY_FILE, "r", encoding="utf-8") as f:
             historial = json.load(f)
-    except (json.JSONDecodeError, FileNotFoundError):
+    except:
         return []
     
     limite_tiempo = datetime.now().timestamp() - (20 * 24 * 60 * 60)
     filtrado = [h for h in historial if h.get("timestamp", 0) >= limite_tiempo and h.get("usuario") == st.session_state.usuario_actual]
     return sorted(filtrado, key=lambda x: x["timestamp"], reverse=True)
 
-# --- PARSER PDF ---
+# --- PARSER PDF OPTIMIZADO ---
 def extraer_preguntas_de_pdf(pdf_file):
     texto_completo = ""
-    hojas_texto_estilo = []
-    hojas_formas = []
-    
     with pdfplumber.open(pdf_file) as pdf:
         for idx, pagina in enumerate(pdf.pages):
-            t = pagina.extract_text(layout=False) or ""
-            texto_completo += t + f"\n--- PAGINA {idx+1} ---\n"
-            
-            try:
-                hojas_texto_estilo.append(pagina.extract_words(extra_attrs=["fontname", "size", "x0", "top"]))
-            except Exception:
-                hojas_texto_estilo.append([])
-                
-            try:
-                hojas_formas.append(pagina.extract_rects() + pagina.extract_lines())
-            except Exception:
-                hojas_formas.append([])
+            texto_completo += (pagina.extract_text(layout=False) or "") + "\n"
 
     mapa_claves_finales = {}
     lineas_doc = texto_completo.split('\n')
-    en_seccion_claves = False
     
+    # Búsqueda de pauta al final
+    en_seccion_claves = False
     for linea in lineas_doc:
         linea_lower = linea.lower()
         if any(kw in linea_lower for kw in ["clave", "respuestas correctas", "pauta de correccion", "answer key", "solucionario"]):
             en_seccion_claves = True
         
         if en_seccion_claves:
-            matches_claves = re.findall(r'\b([0-9]{1,3})[\.\-\)\:]\s*([A-Da-d])\b', linea)
+            matches_claves = re.findall(r'\b([0-9]{1,3})[\.\-\)\:]\s*([A-D])\b', linea, re.IGNORECASE)
             for num_str, letra in matches_claves:
                 mapa_claves_finales[int(num_str)] = letra.upper()
 
     bloques = re.split(r'\n(?=[0-9]{1,3}\.-\s)', texto_completo)
-    if len(bloques) <= 1:
-        bloques = re.split(r'(?=[0-9]{1,3}\.-\s)', texto_completo)
-
     preguntas_parsed = []
-    patron_alt_inicio = re.compile(r'^[☑☒X✔✓xVv\[\]\(\)\*\-\s]*([A-Da-d])[\.\-\)]\s*', re.IGNORECASE)
     
-    current_page = 0
+    # Patrón más tolerante para alternativas y marcas de correcta
+    patron_alt_inicio = re.compile(r'^[☑☒X✔✓xVv\[\]\(\)\*\-\s]*([A-D])[\.\-\)]\s*', re.IGNORECASE)
     
     for bloque in bloques:
         bloque = bloque.strip()
         if len(bloque) < 10:
             continue
-            
-        match_pagina_tag = re.search(r'--- PAGINA ([0-9]+) ---', bloque)
-        if match_pagina_tag:
-            # Asegurar que el índice de página no exceda los límites extraídos
-            indice_extraido = int(match_pagina_tag.group(1)) - 1
-            current_page = min(indice_extraido, len(hojas_texto_estilo) - 1)
-            bloque = re.sub(r'--- PAGINA [0-9]+ ---', '', bloque).strip()
             
         match_num = re.match(r'^([0-9]{1,3})\.-\s*(.*)', bloque, re.DOTALL)
         if not match_num:
@@ -313,7 +289,7 @@ def extraer_preguntas_de_pdf(pdf_file):
         en_alternativas = False
         
         for linea in lineas:
-            if patron_alt_inicio.match(linea) or re.match(r'^[☑☒X✔✓]', linea):
+            if patron_alt_inicio.match(linea) or re.match(r'^[☑☒X✔✓\*]', linea):
                 en_alternativas = True
             
             if not en_alternativas:
@@ -322,7 +298,6 @@ def extraer_preguntas_de_pdf(pdf_file):
                 alternativas_crudas.append(linea)
 
         enunciado = " ".join(enunciado_lineas).strip()
-
         mapa_alts = {}
         alt_actual_letra = None
         alt_actual_texto = []
@@ -331,64 +306,32 @@ def extraer_preguntas_de_pdf(pdf_file):
         for linea in alternativas_crudas:
             match_alt = patron_alt_inicio.match(linea)
             
-            if match_alt or re.match(r'^[☑☒X✔✓]\s*[\-\.]?\s*([A-Da-d])?[\.\-\)]?\s*(.*)', linea):
+            if match_alt:
                 if alt_actual_letra:
                     mapa_alts[alt_actual_letra] = {
                         "texto": " ".join(alt_actual_texto).strip(),
                         "marcada": alt_actual_marcada
                     }
                 
-                if match_alt:
-                    letra_capturada = match_alt.group(1).upper()
-                    alt_actual_letra = letra_capturada if letra_capturada in ['A', 'B', 'C', 'D'] else None
-                else:
-                    alt_actual_letra = None
+                alt_actual_letra = match_alt.group(1).upper()
+                # Heurística mejorada para marcas inline (incluye "correcta")
+                es_marcada = any(s in linea for s in ['☑', '☒', '✔', '✓', '[x]', '(X)', '[X]', '★', '(*)']) or ('correcta' in linea.lower())
                 
-                es_marcada = any(s in linea for s in ['☑', '☒', 'X', '✔', '✓', 'x', '[x]', '(X)', '[X]', 'V', '*', '★']) or ('correcta' in linea.lower())
-                
-                if not es_marcada and hojas_texto_estilo and current_page >= 0:
-                    for w in hojas_texto_estilo[current_page]:
-                        if w["text"] in linea and any(b_kw in w.get("fontname", "").lower() for b_kw in ["bold", "negrita", "black", "bd"]):
-                            es_marcada = True
-                            break
-
-                if not es_marcada and hojas_formas and current_page >= 0:
-                    for w in hojas_texto_estilo[current_page]:
-                        if w["text"] in linea:
-                            wx, wy = w.get("x0", 0), w.get("top", 0)
-                            for forma in hojas_formas[current_page]:
-                                fx = forma.get("x0", forma.get("x", 0))
-                                fy = forma.get("top", forma.get("y", 0))
-                                if abs(fx - wx) < 30 and abs(fy - wy) < 15:
-                                    es_marcada = True
-                                    break
-
-                if not alt_actual_letra:
-                    existentes = list(mapa_alts.keys())
-                    for sig in ['A', 'B', 'C', 'D']:
-                        if sig not in existentes:
-                            alt_actual_letra = sig
-                            break
-                    if not alt_actual_letra:
-                        alt_actual_letra = 'A'
-
                 texto_limpio = patron_alt_inicio.sub('', linea)
                 for s in ['☑', '☒', 'X', '✔', '✓', 'x', '[x]', '(X)', '[X]', 'V', '•', '(*)', '❌', '×', '*', '★']:
                     texto_limpio = texto_limpio.replace(s, "")
-                texto_limpio = re.sub(r'^[\-\.\s]+', '', texto_limpio).strip()
                 
-                alt_actual_texto = [texto_limpio] if texto_limpio else []
+                alt_actual_texto = [texto_limpio.strip()]
                 alt_actual_marcada = es_marcada
             else:
                 if alt_actual_letra:
                     texto_cont = linea
+                    if any(s in linea for s in ['☑', '☒', '✔', '✓', '[x]', '(X)', '[X]', '(*)']) or ('correcta' in linea.lower()):
+                        alt_actual_marcada = True
                     for s in ['☑', '☒', 'X', '✔', '✓', 'x', '[x]', '(X)', '[X]', 'V', '•', '(*)', '❌', '×']:
                         texto_cont = texto_cont.replace(s, "")
-                    texto_cont = re.sub(r'^[\-\.\s]+', '', texto_cont).strip()
-                    if texto_cont:
-                        alt_actual_texto.append(texto_cont)
-                    if any(s in linea for s in ['☑', '☒', 'X', '✔', '✓', 'x', '[x]', '(X)', '[X]']) or ('correcta' in linea.lower()):
-                        alt_actual_marcada = True
+                    if texto_cont.strip():
+                        alt_actual_texto.append(texto_cont.strip())
 
         if alt_actual_letra:
             mapa_alts[alt_actual_letra] = {
@@ -398,9 +341,8 @@ def extraer_preguntas_de_pdf(pdf_file):
 
         alternativas = []
         correcta_idx = None
-        letras_ordenadas = ['A', 'B', 'C', 'D']
         
-        for idx_a, l in enumerate(letras_ordenadas):
+        for idx_a, l in enumerate(['A', 'B', 'C', 'D']):
             if l in mapa_alts and mapa_alts[l]["texto"]:
                 info = mapa_alts[l]
                 if info["marcada"]:
@@ -411,6 +353,7 @@ def extraer_preguntas_de_pdf(pdf_file):
                     "marcada": info["marcada"]
                 })
 
+        # Prevalencia de la pauta final
         if correcta_idx is None and num_pregunta in mapa_claves_finales:
             letra_clave = mapa_claves_finales[num_pregunta]
             for idx_a, alt in enumerate(alternativas):
@@ -430,7 +373,7 @@ def extraer_preguntas_de_pdf(pdf_file):
 
 # --- CONTROL DE ACCESO ---
 if st.session_state.usuario_actual is None:
-    st.markdown("<h2 style='text-align: center; color: var(--accent-blue);'>✈️ AeroStudio Pro - Acceso al Sistema</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center; color: var(--accent-blue); padding-top: 5vh;'>✈️ AeroStudio Pro</h2>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: var(--text-muted); margin-bottom: 2rem;'>Plataforma avanzada de estudio y entrenamiento aeronáutico.</p>", unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -447,7 +390,6 @@ if st.session_state.usuario_actual is None:
                 if email_ingreso in usuarios_db and usuarios_db[email_ingreso]["password"] == pass_ingreso:
                     st.session_state.usuario_actual = email_ingreso
                     guardar_sesion_persistida(email_ingreso)
-                    st.success("¡Acceso exitoso!")
                     st.rerun()
                 else:
                     st.error("Correo o contraseña incorrectos.")
@@ -464,11 +406,7 @@ if st.session_state.usuario_actual is None:
                 elif reg_email in usuarios_db:
                     st.error("Este correo ya está registrado.")
                 else:
-                    usuarios_db[reg_email] = {
-                        "nombre": reg_nombre,
-                        "email": reg_email,
-                        "password": reg_pass
-                    }
+                    usuarios_db[reg_email] = {"nombre": reg_nombre, "email": reg_email, "password": reg_pass}
                     guardar_usuarios(usuarios_db)
                     st.session_state.usuario_actual = reg_email
                     guardar_sesion_persistida(reg_email)
@@ -506,7 +444,7 @@ with st.sidebar:
         st.rerun()
         
     st.divider()
-    st.info("💡 **Consejo:** Utiliza el botón de engranaje (⚙️️) durante tus exámenes para ajustar respuestas en tiempo real.")
+    st.info("💡 **Consejo:** Utiliza el botón de engranaje (⚙) durante tus exámenes para ajustar pautas mal interpretadas.")
     st.write("")
     
     if st.button("🚪 Cerrar Sesión", type="secondary", use_container_width=True):
@@ -558,7 +496,7 @@ elif st.session_state.vista == "historial":
     st.title("📊 Historial de Rendimiento (Últimos 20 días)")
     historial = obtener_historial_reciente()
     if not historial:
-        st.info("No hay registros recientes en tu historial de vuelo/estudio.")
+        st.info("No hay registros recientes en tu historial.")
     else:
         df_hist = pd.DataFrame(historial)
         col_m1, col_m2 = st.columns(2)
@@ -603,7 +541,9 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     respondidas_fail = sum(1 for k, v in resp_dict.items() if v.get("estado") in ["incorrecta", "omitida"])
     puntaje_porcentaje = int((respondidas_ok / total_preguntas) * 100) if total_preguntas > 0 else 0
     
-    col_top1, col_top_gear, col_top_theme, col_top2 = st.columns([3.5, 0.5, 0.8, 2.2])
+    # Se eliminó el botón de modo oscuro de esta vista
+    col_top1, col_top_gear, col_top2 = st.columns([4, 0.5, 2.5])
+    
     with col_top1:
         st.markdown(f"**Q: {idx_actual + 1}/{total_preguntas}** &nbsp;|&nbsp; ✅ {respondidas_ok} &nbsp;|&nbsp; ❌ {respondidas_fail} &nbsp;|&nbsp; 📈 **{puntaje_porcentaje}%**")
     
@@ -633,12 +573,6 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
                         guardar_banco(b_id_actual, banco_data)
                 st.success("¡Actualizado con éxito!")
                 st.rerun()
-
-    with col_top_theme:
-        icono_tema = "☀️️" if st.session_state.modo_oscuro else "🌙"
-        if st.button(icono_tema, help="Cambiar tema visual", key="btn_toggle_theme_study"):
-            st.session_state.modo_oscuro = not st.session_state.modo_oscuro
-            st.rerun()
 
     with col_top2:
         with st.popover("🔢 Cuadrícula de Preguntas", help="Ver estado de todas las preguntas"):
@@ -729,8 +663,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
                     st.error("Asigna primero la respuesta correcta usando el engranaje ⚙️.")
                 else:
                     es_correcta = (seleccion_actual == idx_correcta)
-                    estado_str = "correcta" if es_correcta else "incorrecta"
-                    resp_dict[idx_actual]["estado"] = estado_str
+                    resp_dict[idx_actual]["estado"] = "correcta" if es_correcta else "incorrecta"
                     resp_dict[idx_actual]["corregido"] = True
                     st.rerun()
             else:
@@ -740,7 +673,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
                 else:
                     puntaje_final = int((respondidas_ok / total_preguntas) * 100) if total_preguntas > 0 else 0
                     guardar_resultado_historial(estudio["nombre_prueba"], puntaje_final, respondidas_ok, total_preguntas)
-                    st.success(f"🎉 ¡Simulación finalizada! Puntaje obtenido: {puntaje_final}% ({respondidas_ok}/{total_preguntas}). Guardado en tu historial.")
+                    st.success(f"🎉 ¡Simulación finalizada! Puntaje obtenido: {puntaje_final}% ({respondidas_ok}/{total_preguntas}). Guardado en historial.")
                     if st.button("Volver al Menú Principal", use_container_width=True):
                         st.session_state.vista = "home"
                         st.session_state.prueba_activa = None
@@ -749,16 +682,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
 
 # --- VISTA: HOME ---
 else:
-    col_h_title, col_h_btn = st.columns([5, 1])
-    with col_h_title:
-        st.title("📚 Centro de Pruebas y Bancos de Preguntas")
-    with col_h_btn:
-        st.write("")
-        texto_btn_home = "☀️ Modo Claro" if st.session_state.modo_oscuro else "🌙 Modo Oscuro"
-        if st.button(texto_btn_home, key="btn_toggle_home", use_container_width=True):
-            st.session_state.modo_oscuro = not st.session_state.modo_oscuro
-            st.rerun()
-
+    st.title("📚 Centro de Pruebas y Bancos de Preguntas")
     st.markdown(f"Bienvenido de nuevo, **{datos_usuario['nombre']}**. Carga tus documentos normativos en PDF o selecciona un banco guardado para iniciar tu entrenamiento.")
     st.divider()
 
@@ -770,7 +694,7 @@ else:
         st.write("")
         if st.button("Procesar y Generar Banco", type="primary"):
             if uploaded_file and nombre_nueva_prueba:
-                with st.spinner("Analizando estructuras vectoriales, estilos tipográficos y claves del PDF..."):
+                with st.spinner("Analizando estructuras vectoriales y pautas del PDF..."):
                     preguntas_extraidas = extraer_preguntas_de_pdf(uploaded_file)
                     if preguntas_extraidas:
                         id_limpio = re.sub(r'[^a-zA-Z0-9_\-]', '_', nombre_nueva_prueba)
@@ -778,58 +702,36 @@ else:
                             "nombre": nombre_nueva_prueba,
                             "preguntas": preguntas_extraidas
                         })
-                        st.success(f"¡Banco '{nombre_nueva_prueba}' generado con éxito ({len(preguntas_extraidas)} preguntas detectadas)!")
+                        st.success(f"¡Éxito! Se extrajeron {len(preguntas_extraidas)} preguntas.")
                         st.rerun()
                     else:
-                        st.error("No se pudieron extraer preguntas válidas del PDF.")
+                        st.error("No se detectó un formato válido de preguntas y alternativas en el PDF.")
             else:
-                st.warning("Por favor, adjunta un archivo PDF y asigna un nombre.")
-
+                st.warning("Falta adjuntar el documento o ingresar el nombre.")
+                
     st.divider()
-    st.subheader("📂 Tus Bancos Guardados")
+    st.subheader("Bancos Disponibles")
     bancos = listar_bancos()
-
     if not bancos:
-        st.info("No hay bancos de preguntas almacenados actualmente.")
-    else:
-        for b_id in bancos:
-            datos_banco = cargar_banco(b_id)
-            if not datos_banco:
-                continue
-            
-            with st.container():
-                col_h1, col_h2, col_h3, col_h4 = st.columns([3, 2, 2, 2])
-                with col_h1:
-                    nuevo_nombre = st.text_input(f"Editar {b_id}", value=datos_banco.get("nombre", b_id), key=f"edit_{b_id}", label_visibility="collapsed")
-                    if nuevo_nombre != datos_banco.get("nombre", b_id):
-                        datos_banco["nombre"] = nuevo_nombre
-                        guardar_banco(b_id, datos_banco)
-                with col_h2:
-                    cantidad_q = len(datos_banco.get('preguntas', []))
-                    st.markdown(f"📋 **{cantidad_q}** preguntas")
-                with col_h3:
-                    modo_aleatorio = st.checkbox("Modo Aleatorio", value=True, key=f"rnd_{b_id}")
-                with col_h4:
-                    subcol1, subcol2 = st.columns(2)
-                    with subcol1:
-                        if st.button("🚀 Iniciar", key=f"btn_start_{b_id}", use_container_width=True):
-                            if cantidad_q > 0:
-                                lista_q = datos_banco["preguntas"].copy()
-                                if modo_aleatorio:
-                                    random.shuffle(lista_q)
-                                st.session_state.modo_estudio_data = {
-                                    "b_id": b_id,
-                                    "nombre_prueba": datos_banco.get("nombre", b_id),
-                                    "preguntas": lista_q,
-                                    "idx_actual": 0,
-                                    "respuestas_usuario": {}
-                                }
-                                st.session_state.vista = "estudio"
-                                st.rerun()
-                            else:
-                                st.error("El banco está vacío.")
-                    with subcol2:
-                        if st.button("🗑️", key=f"btn_del_{b_id}", type="secondary", use_container_width=True, help="Eliminar banco"):
-                            eliminar_banco(b_id)
-                            st.rerun()
-                st.divider()
+        st.info("Aún no has cargado ningún banco de preguntas.")
+    
+    for b_id in bancos:
+        banco_data = cargar_banco(b_id)
+        if not banco_data: continue
+        col1, col2 = st.columns([4, 1])
+        with col1:
+            st.markdown(f"**{banco_data.get('nombre', b_id)}** — {len(banco_data.get('preguntas', []))} preguntas")
+        with col2:
+            if st.button("🚀 Iniciar", key=f"start_{b_id}", use_container_width=True):
+                preg = banco_data.get("preguntas", [])
+                if preg:
+                    st.session_state.modo_estudio_data = {
+                        "preguntas": preg, 
+                        "idx_actual": 0,
+                        "b_id": b_id,
+                        "nombre_prueba": banco_data.get('nombre', b_id),
+                        "respuestas_usuario": {}
+                    }
+                    st.session_state.vista = "estudio"
+                    st.rerun()
+        st.divider()
