@@ -15,11 +15,11 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- GESTIÓN DE TEMA (MODO OSCURO / CLARO / AUTO) ---
-if "tema_app" not in st.session_state:
-    st.session_state.tema_app = "Automático (Dispositivo)"
+# --- GESTIÓN DE TEMA (MODO OSCURO / CLARO MANUAL Y AUTOMÁTICO) ---
+if "modo_oscuro" not in st.session_state:
+    st.session_state.modo_oscuro = False
 
-# --- CAPA DE DISEÑO UI/UX ADAPTATIVA ---
+# Definición de variables CSS para ambos modos
 css_light = """
     :root {
         --bg-main: #f8fafc;
@@ -46,25 +46,12 @@ css_dark = """
     }
 """
 
-# Definición de estilos condicionales según la selección del usuario
-if st.session_state.tema_app == "Modo Oscuro":
-    css_tema = css_dark
-elif st.session_state.tema_app == "Modo Claro":
-    css_tema = css_light
-else:
-    # Automático: usa el media query del navegador/dispositivo
-    css_tema = f"""
-        @media (prefers-color-scheme: dark) {{
-            {css_dark}
-        }}
-        @media (prefers-color-scheme: light) {{
-            {css_light}
-        }}
-    """
+# Selección del tema activo según el estado de la sesión
+css_activo = css_dark if st.session_state.modo_oscuro else css_light
 
 st.markdown(f"""
 <style>
-    {css_tema}
+    {css_activo}
 
     .stApp {{
         background-color: var(--bg-main);
@@ -491,18 +478,14 @@ datos_usuario = usuarios_db.get(st.session_state.usuario_actual, {"nombre": "Pil
 
 # --- BARRA LATERAL ---
 with st.sidebar:
-    st.markdown(f"### 👨‍✈️ {datos_usuario['nombre']}")
+    st.markdown(f"### 👨‍✈️️ {datos_usuario['nombre']}")
     st.caption("Piloto en Entrenamiento")
     st.divider()
     
-    # Selector de tema interactivo en la barra lateral
-    nuevo_tema = st.selectbox(
-        "🎨 Tema Visual",
-        options=["Automático (Dispositivo)", "Modo Oscuro", "Modo Claro"],
-        index=["Automático (Dispositivo)", "Modo Oscuro", "Modo Claro"].index(st.session_state.tema_app)
-    )
-    if nuevo_tema != st.session_state.tema_app:
-        st.session_state.tema_app = nuevo_tema
+    # Botón dinámico de Modo Oscuro / Claro en la barra lateral
+    texto_modo = "☀️ Cambiar a Modo Claro" if st.session_state.modo_oscuro else "🌙 Cambiar a Modo Oscuro"
+    if st.button(texto_modo, use_container_width=True, type="secondary"):
+        st.session_state.modo_oscuro = not st.session_state.modo_oscuro
         st.rerun()
 
     st.divider()
@@ -524,7 +507,6 @@ with st.sidebar:
     st.info("💡 **Consejo:** Utiliza el botón de engranaje (⚙️) durante tus exámenes para ajustar respuestas en tiempo real.")
     st.write("")
     
-    # Corrección aplicada de indentación y uso de type="secondary"
     if st.button("🚪 Cerrar Sesión", type="secondary", use_container_width=True):
         st.session_state.usuario_actual = None
         eliminar_sesion_persistida()
@@ -594,7 +576,7 @@ elif st.session_state.vista == "historial":
         st.session_state.vista = "home"
         st.rerun()
 
-# --- VISTA: ESTUDIO ---
+# --- VISTA: ESTUDIO (EXAMEN) ---
 elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     estudio = st.session_state.modo_estudio_data
     preguntas = estudio["preguntas"]
@@ -610,7 +592,8 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     respondidas_fail = sum(1 for k, v in resp_dict.items() if v.get("estado") in ["incorrecta", "omitida"])
     puntaje_porcentaje = int((respondidas_ok / total_preguntas) * 100) if total_preguntas > 0 else 0
     
-    col_top1, col_top_gear, col_top2 = st.columns([4, 0.6, 2.4])
+    # Cabecera dentro de la prueba con opciones y botón de modo oscuro integrado
+    col_top1, col_top_gear, col_top_theme, col_top2 = st.columns([3.5, 0.5, 0.8, 2.2])
     with col_top1:
         st.markdown(f"**Q: {idx_actual + 1}/{total_preguntas}** &nbsp;|&nbsp; ✅ {respondidas_ok} &nbsp;|&nbsp; ❌ {respondidas_fail} &nbsp;|&nbsp; 📈 **{puntaje_porcentaje}%**")
     
@@ -640,6 +623,12 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
                         guardar_banco(b_id_actual, banco_data)
                 st.success("¡Actualizado con éxito!")
                 st.rerun()
+
+    with col_top_theme:
+        icono_tema = "☀️" if st.session_state.modo_oscuro else "🌙"
+        if st.button(icono_tema, help="Cambiar tema visual", key="btn_toggle_theme_study"):
+            st.session_state.modo_oscuro = not st.session_state.modo_oscuro
+            st.rerun()
 
     with col_top2:
         with st.popover("🔢 Cuadrícula de Preguntas", help="Ver estado de todas las preguntas"):
@@ -750,7 +739,17 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
 
 # --- VISTA: HOME ---
 else:
-    st.title("📚 Centro de Pruebas y Bancos de Preguntas")
+    # Cabecera con botón de cambio de modo en la página principal
+    col_h_title, col_h_btn = st.columns([5, 1])
+    with col_h_title:
+        st.title("📚 Centro de Pruebas y Bancos de Preguntas")
+    with col_h_btn:
+        st.write("")
+        texto_btn_home = "☀️ Modo Claro" if st.session_state.modo_oscuro else "🌙 Modo Oscuro"
+        if st.button(texto_btn_home, key="btn_toggle_home", use_container_width=True):
+            st.session_state.modo_oscuro = not st.session_state.modo_oscuro
+            st.rerun()
+
     st.markdown(f"Bienvenido de nuevo, **{datos_usuario['nombre']}**. Carga tus documentos normativos en PDF o selecciona un banco guardado para iniciar tu entrenamiento.")
     st.divider()
 
