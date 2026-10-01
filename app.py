@@ -120,33 +120,47 @@ def obtener_historial_reciente():
     filtrado = [h for h in historial if h.get("timestamp", 0) >= limite_tiempo and h.get("usuario") == st.session_state.usuario_actual]
     return sorted(filtrado, key=lambda x: x["timestamp"], reverse=True)
 
-# --- PARSER DE PDF CORREGIDO ---
+# --- PARSER AVANZADO: DETECCIÓN DE ANOTACIONES, RAYAS Y DESTACADOS DE TABLETS ---
 def extraer_preguntas_de_pdf(pdf_file):
     reader = PdfReader(pdf_file)
     texto_completo = ""
+    
+    # Recorrer páginas y extraer tanto el texto plano como el contenido de anotaciones (marcas de tablet, destacados, etc.)
     for pagina in reader.pages:
         t = pagina.extract_text()
         if t:
             texto_completo += t + "\n"
+            
+        # Extraer anotaciones de editores PDF (marcas, rectángulos de resaltado, trazos de lápiz o stylus)
         if "/Annots" in pagina:
             try:
                 for annot in pagina["/Annots"]:
                     obj = annot.get_object()
+                    # Si la anotación tiene contenido de texto, contenido asociado o bandera de resaltado/ink
+                    annot_type = str(obj.get("/Subtype", ""))
                     if "/Contents" in obj:
-                        texto_completo += str(obj["/Contents"]) + "\n"
+                        contenido_annot = str(obj["/Contents"])
+                        texto_completo += " [MARCA_ANNOT: " + contenido_annot + "] \n"
+                    elif annot_type in ["/Highlight", "/Ink", "/Square", "/Circle", "/Underline"]:
+                        # Indicar al parser que hay un trazo/resaltado en esta sección de la página
+                        rect = obj.get("/Rect", [0, 0, 0, 0])
+                        texto_completo += f" [DESTACADO_TABLET_Y_{rect[1] if len(rect)>1 else 0}] \n"
             except:
                 pass
 
     texto_completo = re.sub(r'\r\n', '\n', texto_completo)
+    
+    # Dividir bloques por número de pregunta (ej. "1.-", "2.-")
     bloques = re.split(r'\n(?=[0-9]{1,3}\.-\s)', texto_completo)
     if len(bloques) <= 1:
         bloques = re.split(r'(?=[0-9]{1,3}\.-\s)', texto_completo)
 
     preguntas_parsed = []
+    patron_alt_inicio = re.compile(r'^[☑☒X✔✓xVv\[\]\(\)\*\-\s]*([A-Da-d])[\.\-\)]\s*', re.IGNORECASE)
     
     for bloque in bloques:
         bloque = bloque.strip()
-        if len(bloque) < 15:
+        if len(bloque) < 10:
             continue
             
         match_num = re.match(r'^([0-9]{1,3})\.-\s*(.*)', bloque, re.DOTALL)
@@ -157,65 +171,68 @@ def extraer_preguntas_de_pdf(pdf_file):
         lineas = [l.strip() for l in cuerpo_bloque.split('\n') if l.strip()]
         
         enunciado_lineas = []
-        lineas_alts = []
+        alternativas_crudas = []
         en_alternativas = False
         
         for linea in lineas:
-            if re.match(r'^[☑☒X✔✓xVv]?\s*[A-Da-d][\.\-\)]', linea) or en_alternativas:
+            if patron_alt_inicio.match(linea):
                 en_alternativas = True
-                lineas_alts.append(linea)
+            
+            if not en_alternativas:
+                enunciado_lineas.append(linea)
             else:
-                if not en_alternativas:
-                    enunciado_lineas.append(linea)
-                else:
-                    lineas_alts.append(linea)
+                alternativas_crudas.append(linea)
 
         enunciado = " ".join(enunciado_lineas).strip()
         enunciado = re.sub(r'Materia\s*:.*?Cantidad de Preguntas\s*:\s*[0-9]+', '', enunciado).strip()
 
+        mapa_alts = {}
+        alt_actual_letra = None
+        alt_actual_texto = []
+        alt_actual_marcada = False
+        
+        for linea in alternativas_crudas:
+            match_alt = patron_alt_inicio.match(linea)
+            if match_alt:
+                if alt_actual_letra:
+                    mapa_alts[alt_actual_letra] = {
+                        "texto": " ".join(alt_actual_texto).strip(),
+                        "marcada": alt_actual_marcada
+                    }
+                
+                alt_actual_letra = match_alt.group(1).upper()
+                
+                # Detectar marcas tradicionales o marcas de resaltado/rayas hechas en tablets ([DESTACADO_TABLET...], etc.)
+                es_marcada = any(s in linea for s in ['☑', '☒', 'X', '✔', '✓', 'x', '[x]', '(X)', '[X]', 'V', '*', '[DESTACADO_TABLET', '[MARCA_ANNOT'])
+                
+                texto_limpio = patron_alt_inicio.sub('', linea)
+                for s in ['☑', '☒', 'X', '✔', '✓', 'x', '[x]', '(X)', '[X]', 'V', '•', '(*)', '❌', '×', '*']:
+                    texto_limpio = texto_limpio.replace(s, "")
+                texto_limpio = re.sub(r'^[\-\.\s]+', '', texto_limpio).strip()
+                
+                alt_actual_texto = [texto_limpio] if texto_limpio else []
+                alt_actual_marcada = es_marcada
+            else:
+                if alt_actual_letra:
+                    texto_cont = linea
+                    for s in ['☑', '☒', 'X', '✔', '✓', 'x', '[x]', '(X)', '[X]', 'V', '•', '(*)', '❌', '×']:
+                        texto_cont = texto_cont.replace(s, "")
+                    texto_cont = re.sub(r'^[\-\.\s]+', '', texto_cont).strip()
+                    if texto_cont:
+                        alt_actual_texto.append(texto_cont)
+                    if any(s in linea for s in ['☑', '☒', 'X', '✔', '✓', 'x', '[x]', '(X)', '[X]', '[DESTACADO_TABLET', '[MARCA_ANNOT']):
+                        alt_actual_marcada = True
+
+        if alt_actual_letra:
+            mapa_alts[alt_actual_letra] = {
+                "texto": " ".join(alt_actual_texto).strip(),
+                "marcada": alt_actual_marcada
+            }
+
         alternativas = []
         correcta_idx = None
-        texto_completo_alts = "\n".join(lineas_alts)
-        
-        # Fragmentar por cada alternativa A, B, C, D de forma limpia
-        fragmentos = re.split(r'(?=[☑☒X✔✓xVv]?\s*[A-Da-d][\.\-\)])', texto_completo_alts)
-        
-        mapa_alts = {}
-        for frag in fragmentos:
-            frag = frag.strip()
-            if not frag:
-                continue
-                
-            match_alt = re.match(r'^([☑☒X✔✓xVv]?)\s*([A-Da-d])[\.\-\)]\s*(.*)', frag, re.DOTALL)
-            if match_alt:
-                marca_simbolo = match_alt.group(1)
-                letra = match_alt.group(2).upper()
-                texto = match_alt.group(3).strip()
-                
-                es_marcada = bool(marca_simbolo) or any(s in frag[:12] for s in ['☑', '☒', 'X', '✔', '✓', 'x', '[x]', '(X)', '[X]', 'V'])
-                for s in ['☑', '☒', 'X', '✔', '✓', 'x', '[x]', '(X)', '[X]', 'V', '•', '(*)', '❌', '×']:
-                    texto = texto.replace(s, "")
-                
-                # Limpiar guiones iniciales sobrantes (ej: "- - Texto" -> "Texto")
-                texto = re.sub(r'^[\-\.\s]+', '', texto).strip()
-                texto = " ".join(texto.split()).strip()
-                
-                if texto:
-                    mapa_alts[letra] = {"texto": texto, "marcada": es_marcada}
-            else:
-                if mapa_alts:
-                    ultima_letra = list(mapa_alts.keys())[-1]
-                    es_marcada_flotante = any(s in frag for s in ['☑', '☒', 'X', '✔', '✓', 'x', '[x]', '(X)', '[X]'])
-                    for s in ['☑', '☒', 'X', '✔', '✓', 'x', '[x]', '(X)', '[X]', 'V', '•', '(*)', '❌', '×']:
-                        frag = frag.replace(s, "")
-                    frag = re.sub(r'^[\-\.\s]+', '', frag).strip()
-                    frag = " ".join(frag.split()).strip()
-                    if frag:
-                        mapa_alts[ultima_letra]["texto"] += " " + frag
-                    if es_marcada_flotante:
-                        mapa_alts[ultima_letra]["marcada"] = True
-
         letras_ordenadas = ['A', 'B', 'C', 'D']
+        
         for idx_a, l in enumerate(letras_ordenadas):
             if l in mapa_alts and mapa_alts[l]["texto"]:
                 info = mapa_alts[l]
@@ -517,7 +534,7 @@ else:
     
     if st.button("Procesar y Crear Banco de Preguntas", type="primary"):
         if uploaded_file and nombre_nueva_prueba:
-            with st.spinner("Leyendo PDF y extrayendo respuestas del documento..."):
+            with st.spinner("Leyendo PDF, marcas de tablets y anotaciones..."):
                 preguntas_extraidas = extraer_preguntas_de_pdf(uploaded_file)
                 if preguntas_extraidas:
                     id_limpio = re.sub(r'[^a-zA-Z0-9_\-]', '_', nombre_nueva_prueba)
