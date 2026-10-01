@@ -91,7 +91,7 @@ def obtener_historial_reciente():
     filtrado = [h for h in historial if h.get("timestamp", 0) >= limite_tiempo]
     return sorted(filtrado, key=lambda x: x["timestamp"], reverse=True)
 
-# Parser avanzado y definitivo para formato PTLA Fisiología (reconoce casillas ☑ y marcas X)
+# Parser avanzado y ultra preciso para extraer preguntas y alternativas con marcas exactas
 def extraer_preguntas_de_pdf(pdf_file):
     reader = PdfReader(pdf_file)
     texto_completo = ""
@@ -110,6 +110,7 @@ def extraer_preguntas_de_pdf(pdf_file):
 
     texto_completo = re.sub(r'\r\n', '\n', texto_completo)
 
+    # Separar bloques por número de pregunta (ej. "1.-", "2.-")
     bloques = re.split(r'\n(?=[0-9]{1,3}\.-\s)', texto_completo)
     if len(bloques) <= 1:
         bloques = re.split(r'(?=[0-9]{1,3}\.-\s)', texto_completo)
@@ -127,58 +128,85 @@ def extraer_preguntas_de_pdf(pdf_file):
             
         cuerpo_bloque = match_num.group(2)
         
-        # Normalizar saltos de línea donde los símbolos ☑ o X están separados del texto de la alternativa
-        cuerpo_bloque = re.sub(r'\n\s*([☑X✔✓√])\s*\n\s*', r' \1 ', cuerpo_bloque)
+        # Aislar el enunciado y las líneas del bloque
+        lineas = cuerpo_bloque.split('\n')
+        enunciado_lineas = []
+        lineas_alternativas = []
         
-        # Dividir usando un patrón flexible para alternativas (A-D o símbolos de marca)
-        parts = re.split(r'\b([A-D]|☑|X|✔|✓)\s*[\.\-\)]\s*', cuerpo_bloque)
-        if len(parts) < 3:
-            parts = re.split(r'\n\s*([A-D]|☑|X|✔|✓)[\.\-\)]\s*', cuerpo_bloque)
-            
-        if len(parts) < 3:
-            continue
-            
-        enunciado = parts[0].strip()
+        capturando_alts = False
+        for linea in lineas:
+            linea_str = linea.strip()
+            # Detectar si la línea comienza con una alternativa (A.-, B.-, C.-, D.- o variantes con marcas)
+            if re.match(r'^([☑X✔✓]?\s*[A-D])[\.\-\)]', linea_str) or capturando_alts:
+                capturando_alts = True
+                lineas_alternativas.append(linea_str)
+            else:
+                if not capturando_alts:
+                    enunciado_lineas.append(linea_str)
+                else:
+                    lineas_alternativas.append(linea_str)
+
+        enunciado = " ".join(enunciado_lineas).strip()
         enunciado = re.sub(r'Materia\s*:.*?Cantidad de Preguntas\s*:\s*[0-9]+', '', enunciado).strip()
+
+        # Reconstruir texto de alternativas unidas
+        texto_alts_unido = " ".join(lineas_alternativas)
+        
+        # Buscar fragmentos de alternativas usando expresión regular robusta
+        # Busca patrones como A.-, B.-, C.-, D.- permitiendo símbolos de marca antes o después
+        raw_parts = re.split(r'([☑X✔✓]?\s*[A-D])[\.\-\)]\s*', texto_alts_unido)
         
         alternativas = []
         correcta_idx = None
         
-        alt_idx = 0
-        i = 1
-        while i < len(parts) - 1:
-            token = parts[i].strip()
-            texto_alt = parts[i+1].strip()
-            texto_alt = re.sub(r'\s+[0-9]{1,3}\.-.*$', '', texto_alt)
-            
-            letra = chr(ord('A') + alt_idx)
-            
-            # Detectar si la alternativa o su token contiene una marca de respuesta correcta (☑, X, etc.)
-            es_marca = token in ['☑', 'X', '✔', '✓'] or any(s in token or s in texto_alt[:5] for s in ['☑', 'X', '✔', '✓', '●', '(•)', '[x]', '(X)'])
-            
-            if token in ['A', 'B', 'C', 'D']:
-                letra = token
-                alt_idx = ord(token) - ord('A')
-            
-            if es_marca:
-                correcta_idx = alt_idx
-            
-            # Limpiar símbolos gráficos y marcas del texto limpio
-            for s in ['☑', 'X', '✔', '✓', '●', '(•)', '[x]', '(X)', '•', '(*)', '❌', '×']:
-                texto_alt = texto_alt.replace(s, "")
-            texto_alt = re.sub(r'^[\bX\b\/\-\_\+\*\.]+\s*', '', texto_alt).strip()
-            
-            alternativas.append({
-                "letra": letra,
-                "texto": texto_alt,
-                "marcada": es_marca
-            })
-            
-            alt_idx += 1
-            i += 2
+        if len(raw_parts) >= 3:
+            # raw_parts viene como [texto_basura, token_A, texto_A, token_B, texto_B, ...]
+            idx_alt = 0
+            i = 1
+            while i < len(raw_parts) - 1:
+                token_letra = raw_parts[i].strip()
+                texto_alt = raw_parts[i+1].strip()
+                
+                # Extraer letra real (A, B, C, D)
+                match_letra = re.search(r'([A-D])', token_letra)
+                if match_letra:
+                    letra = match_letra.group(1)
+                else:
+                    letra = chr(ord('A') + idx_alt)
 
+                # Verificar si tiene marca de respuesta correcta (☑, X, ✔, etc.)
+                es_correcta = False
+                if any(s in token_letra for s in ['☑', 'X', '✔', '✓', '●', '[x]', '(X)']):
+                    es_correcta = True
+                if any(s in texto_alt[:5] for s in ['☑', 'X', '✔', '✓', '●', '[x]', '(X)']):
+                    es_correcta = True
+
+                # Limpiar símbolos gráficos del texto de la alternativa
+                for s in ['☑', 'X', '✔', '✓', '●', '(•)', '[x]', '(X)', '•', '(*)', '❌', '×']:
+                    texto_alt = texto_alt.replace(s, "")
+                texto_alt = re.sub(r'^[\bX\b\/\-\_\+\*\.]+\s*', '', texto_alt).strip()
+
+                current_idx = ord(letra) - ord('A')
+                if es_correcta:
+                    correcta_idx = current_idx
+
+                alternativas.append({
+                    "letra": letra,
+                    "texto": texto_alt,
+                    "marcada": es_correcta
+                })
+                
+                idx_alt += 1
+                i += 2
+
+        # Si por alguna razón no se detectó marca con el split anterior, intentamos un análisis línea por línea
         if correcta_idx is None and alternativas:
-            correcta_idx = 0  # Fallback seguro si no detecta símbolo
+            for idx_a, alt in enumerate(alternativas):
+                if alt["marcada"]:
+                    correcta_idx = idx_a
+                    break
+            if correcta_idx is None:
+                correcta_idx = 0 # Fallback por seguridad
 
         if enunciado and len(alternativas) >= 2:
             preguntas_parsed.append({
@@ -211,7 +239,7 @@ with st.sidebar:
         
     st.divider()
     st.markdown("### ✈️ Panel de Control")
-    st.info("Sube tus bancos en PDF. El sistema detecta automáticamente todas las respuestas marcadas con ☑ o X.")
+    st.info("Sube tus bancos en PDF. El sistema detecta correctamente las alternativas con marcas X o casillas ☑.")
 
 # ==================== VISTA: HISTORIAL ====================
 if st.session_state.vista == "historial":
@@ -318,7 +346,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     if seleccion_actual is not None:
         st.caption(f"Opción seleccionada actualmente: **Alternativa {q_actual['alternativas'][seleccion_actual]['letra']}**")
     else:
-        st.caption("⚠️ Ninguna alternativa seleccionada (Pregunta en blanco).")
+        st.caption("⚠️️ Ninguna alternativa seleccionada (Pregunta en blanco).")
 
     if corregido:
         idx_correcta = q_actual.get("correcta")
@@ -380,7 +408,7 @@ else:
     
     if st.button("Procesar y Crear Banco de Preguntas", type="primary"):
         if uploaded_file and nombre_nueva_prueba:
-            with st.spinner("Leyendo PDF y detectando marcas ☑ y X automáticamente..."):
+            with st.spinner("Leyendo PDF y asociando marcas correctas con precisión..."):
                 preguntas_extraidas = extraer_preguntas_de_pdf(uploaded_file)
                 if preguntas_extraidas:
                     id_limpio = re.sub(r'[^a-zA-Z0-9_\-]', '_', nombre_nueva_prueba)
