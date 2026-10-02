@@ -1,4 +1,5 @@
 streamlit
-google-genai
-pdf2image
+opencv-python-headless
+google-generativeai
 pillow
+numpy
