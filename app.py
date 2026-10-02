@@ -25,8 +25,8 @@ manifest_dict = {
     "short_name": "AeroStudio",
     "start_url": "/",
     "display": "standalone",
-    "background_color": "#171514",
-    "theme_color": "#d97706",
+    "background_color": "#2c221e",
+    "theme_color": "#b45309",
     "icons": [
         {
             "src": "https://img.icons8.com/color/512/airplane-take-off.png",
@@ -47,7 +47,7 @@ if "vista" not in st.session_state:
 if "modo_estudio_data" not in st.session_state:
     st.session_state.modo_estudio_data = None
 
-# --- CSS: MODO CLARO, MODO LECTURA NOCTURNA Y CONTROL DE BARRA LATERAL ---
+# --- CSS: MODO CLARO Y MODO SEPIA NOCTURNO ---
 css_light = """
     :root {
         --bg-main: #f8fafc;
@@ -61,24 +61,33 @@ css_light = """
     }
 """
 
-css_dark = """
+css_sepia_dark = """
     :root {
-        --bg-main: #171514;
-        --bg-card: #23201e;
-        --accent-blue: #d97706;
-        --accent-hover: #b45309;
-        --text-main: #f5efe6;
-        --text-muted: #a8a29e;
-        --border-color: #3f3835;
-        --sidebar-bg: #1c1917;
+        --bg-main: #f5eedc;
+        --bg-card: #faf6ed;
+        --accent-blue: #b45309;
+        --accent-hover: #92400e;
+        --text-main: #3d312a;
+        --text-muted: #786458;
+        --border-color: #e3d5be;
+        --sidebar-bg: #362923;
+        --sidebar-text: #f5eedc;
     }
+    /* Estilos específicos para texto y elementos en la barra lateral sepia oscura */
+    section[data-testid="stSidebar"] {{
+        background-color: var(--sidebar-bg) !important;
+        color: var(--sidebar-text) !important;
+    }}
+    section[data-testid="stSidebar"] .stMarkdown, section[data-testid="stSidebar"] span, section[data-testid="stSidebar"] p, section[data-testid="stSidebar"] label {{
+        color: var(--sidebar-text) !important;
+    }}
 """
 
-css_activo = css_dark if st.session_state.modo_oscuro else css_light
+css_activo = css_sepia_dark if st.session_state.modo_oscuro else css_light
 
 st.markdown(f"""
 <link rel="manifest" href="{manifest_data_uri}">
-<meta name="theme-color" content="#d97706">
+<meta name="theme-color" content="#b45309">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <style>
@@ -105,7 +114,7 @@ st.markdown(f"""
         border-radius: 8px;
         padding: 0.6rem 1.2rem;
         font-weight: 600;
-        box-shadow: 0 4px 12px rgba(217, 119, 6, 0.15);
+        box-shadow: 0 4px 12px rgba(180, 83, 9, 0.15);
         transition: all 0.2s ease-in-out;
     }}
     div.stButton > button:hover {{
@@ -123,10 +132,6 @@ st.markdown(f"""
         border: 1px solid var(--border-color) !important;
         border-radius: 8px !important;
         padding: 0.6rem 1rem !important;
-    }}
-    section[data-testid="stSidebar"] {{
-        background-color: var(--sidebar-bg);
-        border-right: 1px solid var(--border-color);
     }}
     div[data-testid="metric-container"] {{
         background-color: var(--bg-card);
@@ -616,7 +621,7 @@ with st.sidebar:
     st.caption("Piloto en Entrenamiento")
     st.divider()
     
-    texto_modo = "🌙 Activar Modo Lectura Nocturna (Filtro Cálido)" if not st.session_state.modo_oscuro else "☀️ Cambiar a Modo Claro"
+    texto_modo = "🌙 Activar Modo Sepia Nocturno" if not st.session_state.modo_oscuro else "☀️ Cambiar a Modo Claro"
     if st.button(texto_modo, use_container_width=True, type="secondary"):
         st.session_state.modo_oscuro = not st.session_state.modo_oscuro
         st.rerun()
@@ -816,7 +821,6 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     estado_actual_q = resp_dict[idx_actual]
     corregido = estado_actual_q.get("corregido", False)
     
-    # Alternativas limpias sin opción por defecto molesta
     opciones_tuplas = [(i, f"{alt['letra']}.- {alt['texto']}") for i, alt in enumerate(q_actual["alternativas"])]
     
     radio_key = f"radio_alt_{idx_actual}"
