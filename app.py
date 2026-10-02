@@ -1,46 +1,43 @@
+import streamlit as st
 import cv2
 import google.generativeai as genai
 from PIL import Image
 import json
 import os
+import numpy as np
 
-# 1. Configuración de la API (Segura)
-# El sistema ahora buscará la clave en las variables de entorno de Codespaces/GitHub
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+# Configuración de la API usando los secretos de Streamlit
+genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 
-def preprocesar_imagen(ruta_imagen):
+st.set_page_config(page_title="Lector DGAC", layout="centered")
+st.title("✈️ Lector de Cuestionarios DGAC")
+st.write("Sube una foto de la página del examen para extraer el texto y detectar la alternativa marcada a lápiz.")
+
+def procesar_imagen_memoria(imagen_bytes):
     """
-    Maximiza el contraste del lápiz grafito frente al papel y la tinta impresa.
+    Convierte el archivo web subido a una imagen de OpenCV y mejora el contraste.
     """
-    # Leer la imagen original
-    img = cv2.imread(ruta_imagen)
-    if img is None:
-        raise FileNotFoundError(f"No se pudo encontrar la imagen '{ruta_imagen}'. Verifica que el nombre esté escrito exactamente igual.")
+    # Convertir bytes a formato legible por OpenCV
+    nparr = np.frombuffer(imagen_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
-    # Convertir a escala de grises
+    # Convertir a escala de grises y aplicar contraste (CLAHE)
     gris = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-    # Aplicar CLAHE (Contrast Limited Adaptive Histogram Equalization)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     imagen_mejorada = clahe.apply(gris)
 
-    # Guardar imagen optimizada temporalmente
+    # Guardar temporalmente para pasarla a Gemini
     ruta_temp = "temp_optimizada.jpg"
     cv2.imwrite(ruta_temp, imagen_mejorada)
-    
     return ruta_temp
 
 def extraer_cuestionario(ruta_imagen):
     """
-    Envía la imagen preprocesada al modelo multimodal solicitando un JSON estricto.
+    Analiza la imagen procesada usando el modelo multimodal.
     """
-    ruta_lista = preprocesar_imagen(ruta_imagen)
-    imagen_pil = Image.open(ruta_lista)
-
-    # Instanciar el modelo (gemini-1.5-pro es ideal para documentos complejos)
+    imagen_pil = Image.open(ruta_imagen)
     modelo = genai.GenerativeModel('gemini-1.5-pro')
 
-    # Prompt de extracción estructurada
     prompt = """
     Eres un sistema experto en OMR (Optical Mark Recognition) y OCR.
     Analiza la imagen adjunta, que es una página de un examen de aviación de la DGAC.
@@ -62,37 +59,35 @@ def extraer_cuestionario(ruta_imagen):
     ]
     Si no hay marca en una pregunta, asigna null a "respuesta_marcada".
     """
-
-    # Configurar la generación para forzar formato JSON
-    configuracion = genai.GenerationConfig(
-        response_mime_type="application/json"
-    )
-
-    respuesta = modelo.generate_content(
-        [prompt, imagen_pil],
-        generation_config=configuracion
-    )
+    configuracion = genai.GenerationConfig(response_mime_type="application/json")
+    respuesta = modelo.generate_content([prompt, imagen_pil], generation_config=configuracion)
     
-    # Limpiar archivo temporal
-    if os.path.exists(ruta_lista):
-        os.remove(ruta_lista)
+    # Limpieza del archivo temporal
+    if os.path.exists(ruta_imagen):
+        os.remove(ruta_imagen)
 
-    # Retornar el objeto JSON parseado
     return json.loads(respuesta.text)
 
-# Ejecución principal
-if __name__ == "__main__":
-    # IMPORTANTE: Reemplaza "nombre_de_tu_imagen.png" con el nombre exacto 
-    # de la imagen del cuestionario que subiste a Codespaces
-    archivo_prueba = "nombre_de_tu_imagen.png" 
+# Interfaz de usuario para cargar archivos
+archivo_subido = st.file_uploader("Adjunta tu imagen (JPG, PNG)", type=["jpg", "jpeg", "png"])
+
+if archivo_subido is not None:
+    # Mostrar vista previa de la imagen cargada
+    st.image(archivo_subido, caption="Vista previa del documento", use_column_width=True)
     
-    try:
-        print(f"Iniciando el procesamiento de '{archivo_prueba}'...")
-        datos_examen = extraer_cuestionario(archivo_prueba)
-        
-        print("\n¡Extracción exitosa! Aquí está el resultado estructurado:\n")
-        # Imprimir el resultado estructurado
-        print(json.dumps(datos_examen, indent=4, ensure_ascii=False))
-        
-    except Exception as e:
-        print(f"\nOcurrió un error en la ejecución: {e}")
+    if st.button("Analizar Respuestas", type="primary"):
+        with st.spinner("Procesando contraste y leyendo documento..."):
+            try:
+                # Leer los bytes del archivo cargado en la web
+                bytes_data = archivo_subido.getvalue()
+                
+                # Ejecutar el flujo de procesamiento
+                ruta_procesada = procesar_imagen_memoria(bytes_data)
+                datos_json = extraer_cuestionario(ruta_procesada)
+                
+                # Mostrar resultados
+                st.success("¡Extracción exitosa!")
+                st.json(datos_json)
+                
+            except Exception as e:
+                st.error(f"Ocurrió un error: {e}")
