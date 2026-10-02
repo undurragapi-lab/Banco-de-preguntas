@@ -7,14 +7,14 @@ import numpy as np
 import cv2
 import random
 
-# Configuración de la interfaz de la aplicación
-st.set_page_config(page_title="Simulador de Estudio Interactivo", layout="wide", page_icon="📚")
+# Configuración de la página
+st.set_page_config(page_title="AeroStudio Pro - Simulador de Estudio", layout="wide", page_icon="📚")
 
 # Configurar API de Gemini utilizando los secretos de Streamlit Cloud
 if "GEMINI_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 
-# Inicialización de Estados de Sesión para mantener el flujo interactivo
+# Inicializar Estados de la Sesión
 if "banco_preguntas" not in st.session_state:
     st.session_state.banco_preguntas = []
 if "indice_actual" not in st.session_state:
@@ -27,6 +27,8 @@ if "malas" not in st.session_state:
     st.session_state.malas = 0
 if "modo_corregido" not in st.session_state:
     st.session_state.modo_corregido = False
+if "respuestas_usuario" not in st.session_state:
+    st.session_state.respuestas_usuario = {}
 
 
 def procesar_imagen_memoria(imagen_bytes):
@@ -41,7 +43,7 @@ def procesar_imagen_memoria(imagen_bytes):
 
 
 def extraer_banco_desde_pdf(bytes_pdf):
-    """Extrae el contenido de texto, alternativas y detecta la marca física a lápiz usando Gemini."""
+    """Extrae preguntas, alternativas y la marca física a lápiz usando Gemini 1.5 Pro."""
     doc = fitz.open(stream=bytes_pdf, filetype="pdf")
     modelo = genai.GenerativeModel('gemini-1.5-pro')
     preguntas_totales = []
@@ -92,13 +94,13 @@ def extraer_banco_desde_pdf(bytes_pdf):
 
 
 # ==========================================
-# INTERFAZ DE USUARIO PRINCIPAL
+# INTERFAZ PRINCIPAL
 # ==========================================
-st.title("📚 Simulador de Estudio Inteligente")
+st.title("📚 Simulador de Estudio Interactivo")
 
-# Pantalla de carga si no hay un banco activo
+# Pantalla de Carga Inicial
 if not st.session_state.banco_preguntas:
-    st.info("Sube tu documento PDF con el banco de preguntas y alternativas marcadas para iniciar la sesión de estudio interactiva.")
+    st.info("Sube tu documento PDF con el banco de preguntas y alternativas marcadas para iniciar la sesión de estudio.")
     archivo_pdf = st.file_uploader("Cargar Banco de Preguntas (PDF)", type=["pdf"])
     
     if archivo_pdf is not None:
@@ -117,13 +119,13 @@ if not st.session_state.banco_preguntas:
                     st.error("No se pudieron extraer preguntas válidas del documento.")
 else:
     # ==========================================
-    # SIMULADOR ACTIVO (ESTILO DAYPO / PREPWARE)
+    # SIMULADOR ACTIVO
     # ==========================================
     total_preguntas = len(st.session_state.banco_preguntas)
     idx_actual = st.session_state.indice_actual
 
-    # Barra superior de estadísticas y botón de cuadrícula en esquina superior derecha
-    col_stats, col_grid_btn = st.columns([0.8, 0.2])
+    # Barra superior de estadísticas y mapa de preguntas (Esquina superior derecha)
+    col_stats, col_grid_btn = st.columns([0.75, 0.25])
     
     with col_stats:
         st.markdown(
@@ -134,7 +136,7 @@ else:
 
     with col_grid_btn:
         with st.popover("📋 Mapa de Preguntas"):
-            st.markdown("**Leyenda:**")
+            st.markdown("**Leyenda de Estados:**")
             st.caption("🔵 Actual | 🟩 Correcta | 🟥 Incorrecto | 🟨 Omitida | ⬛ Sin responder")
             
             cols_grid = st.columns(6)
@@ -159,7 +161,7 @@ else:
 
     st.divider()
 
-    # Pregunta actual y gestión de estados
+    # Pregunta actual
     pregunta_actual = st.session_state.banco_preguntas[idx_actual]
     
     if st.session_state.estados_preguntas.get(idx_actual) == "blanco":
@@ -169,47 +171,71 @@ else:
     st.write(pregunta_actual.get("pregunta", ""))
 
     alternativas = pregunta_actual.get("alternativas", {})
-    respuesta_seleccionada = st.radio(
-        "Selecciona una alternativa:",
-        options=list(alternativas.keys()),
-        format_func=lambda x: f"{x}) {alternativas[x]}",
-        key=f"q_{idx_actual}"
-    )
-
     respuesta_correcta_documento = pregunta_actual.get("respuesta_marcada")
 
-    # Retroalimentación visual inmediata tras corregir
+    # Recuperar selección previa si ya fue respondida
+    seleccion_previa = st.session_state.respuestas_usuario.get(idx_actual, list(alternativas.keys())[0] if alternativas else None)
+    
+    # Si ya se corrigió, mostramos las alternativas con formato visual de tiques y cruces
     if st.session_state.modo_corregido:
+        st.markdown("---")
+        for letra, texto in alternativas.items():
+            sufijo = ""
+            if letra == respuesta_correcta_documento:
+                sufijo = " &nbsp;&nbsp; **✅ [Respuesta Correcta]**"
+            elif letra == seleccion_previa and letra != respuesta_correcta_documento:
+                sufijo = " &nbsp;&nbsp; **❌ [Tu Respuesta Errónea]**"
+            
+            st.markdown(f"**{letra})** {texto} {sufijo}")
+        st.markdown("---")
+        
         if respuesta_correcta_documento:
-            if respuesta_seleccionada == respuesta_correcta_documento:
-                st.success(f"✔ ¡Correcto! La alternativa correcta marcada en el documento es la {respuesta_correcta_documento}.")
+            if seleccion_previa == respuesta_correcta_documento:
+                st.success("✔ ¡Excelente! Tu respuesta coincide con la marca del documento.")
             else:
-                st.error(f"✖ Incorrecto. La respuesta correcta según el documento original es la **{respuesta_correcta_documento}**.")
+                st.error(f"✖ Incorrecto. La alternativa correcta marcada en el documento original era la **{respuesta_correcta_documento}**.")
         else:
-            st.warning("⚠️ Esta pregunta no tiene una marca de respuesta definida en el documento original.")
+            st.warning("⚠️️ Esta pregunta no tiene una marca de respuesta definida en el documento original.")
+            
+    else:
+        # Selección interactiva normal antes de corregir
+        keys_alt = list(alternativas.keys())
+        default_idx = keys_alt.index(seleccion_previa) if seleccion_previa in keys_alt else 0
+        
+        respuesta_seleccionada = st.radio(
+            "Selecciona una alternativa:",
+            options=keys_alt,
+            format_func=lambda x: f"{x}) {alternativas[x]}",
+            key=f"q_{idx_actual}",
+            index=default_idx
+        )
+        st.session_state.respuestas_usuario[idx_actual] = respuesta_seleccionada
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Botones inferiores: Omitir (Izquierda) y Siguiente/Corregir (Derecha)
+    # Controles inferiores: Omitir (Izquierda) y Corregir/Siguiente (Derecha)
     col_izq, col_der = st.columns([1, 1])
 
     with col_izq:
         if st.button("↩ Omitir Pregunta", use_container_width=True):
             st.session_state.estados_preguntas[idx_actual] = "omitida"
+            st.session_state.modo_corregido = False
             if idx_actual < total_preguntas - 1:
                 st.session_state.indice_actual += 1
             else:
                 st.session_state.indice_actual = 0
-            st.session_state.modo_corregido = False
             st.rerun()
 
     with col_der:
-        texto_boton = "Siguiente / Corregir" if not st.session_state.modo_corregido else "Siguiente Pregunta ➡"
+        texto_boton = "Corregir / Validar" if not st.session_state.modo_corregido else "Siguiente Pregunta ➡"
         if st.button(texto_boton, type="primary", use_container_width=True):
             if not st.session_state.modo_corregido:
+                # Al hacer clic en corregir, evaluamos y bloqueamos
                 st.session_state.modo_corregido = True
+                sel_usuario = st.session_state.respuestas_usuario.get(idx_actual)
+                
                 if respuesta_correcta_documento:
-                    if respuesta_seleccionada == respuesta_correcta_documento:
+                    if sel_usuario == respuesta_correcta_documento:
                         if st.session_state.estados_preguntas[idx_actual] != "correcta":
                             st.session_state.buenas += 1
                         st.session_state.estados_preguntas[idx_actual] = "correcta"
@@ -219,6 +245,7 @@ else:
                         st.session_state.estados_preguntas[idx_actual] = "incorrecta"
                 st.rerun()
             else:
+                # Al hacer clic nuevamente, avanzamos a la siguiente pregunta
                 st.session_state.modo_corregido = False
                 if idx_actual < total_preguntas - 1:
                     st.session_state.indice_actual += 1
@@ -231,6 +258,7 @@ else:
         st.session_state.banco_preguntas = []
         st.session_state.indice_actual = 0
         st.session_state.estados_preguntas = {}
+        st.session_state.respuestas_usuario = {}
         st.session_state.buenas = 0
         st.session_state.malas = 0
         st.session_state.modo_corregido = False
