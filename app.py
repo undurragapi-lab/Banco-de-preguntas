@@ -816,7 +816,6 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     estado_actual_q = resp_dict[idx_actual]
     corregido = estado_actual_q.get("corregido", False)
     
-    # Alternativas limpias sin opción por defecto molesta
     opciones_tuplas = [(i, f"{alt['letra']}.- {alt['texto']}") for i, alt in enumerate(q_actual["alternativas"])]
     
     radio_key = f"radio_alt_{idx_actual}"
@@ -957,7 +956,7 @@ else:
                     
                     if usar_ia_pauta:
                         if not st.session_state["gemini_api_key"]:
-                            st.error("⚠️ Para usar el análisis con IA debes configurar tu API Key de Gemini.")
+                            st.error("⚠️️ Para usar el análisis con IA debes configurar tu API Key de Gemini.")
                         else:
                             preguntas_extraidas = procesar_documento_multimodal(
                                 tmp_path, 
@@ -996,12 +995,16 @@ else:
         usuario_actual = st.session_state.usuario_actual or "default"
         indices_falladas = banco_data.get("falladas", {}).get(usuario_actual, [])
         num_falladas = len(indices_falladas)
+        
+        # Conteo de preguntas sin alternativa correcta asignada
+        num_sin_respuesta = sum(1 for q in todas_preguntas if q.get("correcta") is None)
 
         with st.container():
             col1, col2, col3, col4 = st.columns([3, 1.2, 1.8, 0.5])
             with col1:
                 st.markdown(f"**{banco_data.get('nombre', b_id)}**")
                 st.caption(f"Total: {len(todas_preguntas)} preguntas | 🔴 Falladas pendientes: {num_falladas}")
+                st.caption(f"Preguntas sin alternativa correcta: {num_sin_respuesta}")
             with col2:
                 modo_aleatorio = st.checkbox("🔀 Orden Aleatorio", key=f"rnd_{b_id}")
             with col3:
