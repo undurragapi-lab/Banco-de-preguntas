@@ -4,13 +4,10 @@ import json
 import random
 import time
 import tempfile
+import base64
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import streamlit as st
 import pandas as pd
-import pdfplumber
-from PIL import Image
-from pdf2image import convert_from_path
 from google import genai
 from google.genai import types
 
@@ -22,15 +19,35 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- GESTIÓN DE ESTADOS DE SESIÓN ---
+# --- CONFIGURACIÓN PWA INLINE (COMPATIBILIDAD CON CHROME MOBILE) ---
+manifest_dict = {
+    "name": "AeroStudio Pro",
+    "short_name": "AeroStudio",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#171514",
+    "theme_color": "#d97706",
+    "icons": [
+        {
+            "src": "https://img.icons8.com/color/512/airplane-take-off.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        }
+    ]
+}
+manifest_bytes = json.dumps(manifest_dict).encode("utf-8")
+manifest_b64 = base64.b64encode(manifest_bytes).decode("utf-8")
+manifest_data_uri = f"data:application/manifest+json;base64,{manifest_b64}"
+
+# --- GESTIÓN DE ESTADOS DE SESIÓN (MODO CLARO POR DEFECTO) ---
 if "modo_oscuro" not in st.session_state:
-    st.session_state.modo_oscuro = True
+    st.session_state.modo_oscuro = False
 if "vista" not in st.session_state:
     st.session_state.vista = "home"
 if "modo_estudio_data" not in st.session_state:
     st.session_state.modo_estudio_data = None
 
-# --- CSS MEJORADO (DISEÑO UX/UI ORIGINAL) ---
+# --- CSS: MODO CLARO Y MODO LECTURA NOCTURNA (FILTRO LUZ AZUL) ---
 css_light = """
     :root {
         --bg-main: #f8fafc;
@@ -46,20 +63,24 @@ css_light = """
 
 css_dark = """
     :root {
-        --bg-main: #09090b;
-        --bg-card: #18181b;
-        --accent-blue: #0ea5e9;
-        --accent-hover: #0284c7;
-        --text-main: #f4f4f5;
-        --text-muted: #a1a1aa;
-        --border-color: #27272a;
-        --sidebar-bg: #09090b;
+        --bg-main: #171514;
+        --bg-card: #23201e;
+        --accent-blue: #d97706;
+        --accent-hover: #b45309;
+        --text-main: #f5efe6;
+        --text-muted: #a8a29e;
+        --border-color: #3f3835;
+        --sidebar-bg: #1c1917;
     }
 """
 
 css_activo = css_dark if st.session_state.modo_oscuro else css_light
 
 st.markdown(f"""
+<link rel="manifest" href="{manifest_data_uri}">
+<meta name="theme-color" content="#d97706">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
 <style>
     {css_activo}
     .stApp {{
@@ -75,12 +96,11 @@ st.markdown(f"""
         border-radius: 8px;
         padding: 0.6rem 1.2rem;
         font-weight: 600;
-        box-shadow: 0 4px 12px rgba(2, 132, 199, 0.2);
+        box-shadow: 0 4px 12px rgba(217, 119, 6, 0.15);
         transition: all 0.2s ease-in-out;
     }}
     div.stButton > button:hover {{
         transform: translateY(-2px);
-        box-shadow: 0 6px 16px rgba(14, 165, 233, 0.3);
     }}
     div.stButton > button[kind="secondary"] {{
         background: var(--bg-card);
@@ -116,7 +136,7 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-# --- ALMACENAMIENTO ---
+# --- ALMACENAMIENTO LOCAL DE BANCOS Y USUARIOS ---
 DATA_DIR = "data_bancos"
 HISTORY_FILE = "historial_resultados.json"
 USERS_FILE = "usuarios.json"
@@ -124,7 +144,7 @@ SESSION_FILE = "sesion_activa.json"
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# --- GESTIÓN DE CONFIGURACIÓN DE GEMINI ---
+# --- CONFIGURACIÓN Y MODELOS GEMINI ---
 api_key_configurada = ""
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -136,14 +156,20 @@ if "gemini_api_key" not in st.session_state:
     st.session_state["gemini_api_key"] = api_key_configurada
 
 if "gemini_modelo" not in st.session_state:
-    st.session_state["gemini_modelo"] = "gemini-3.8-flash"
+    st.session_state["gemini_modelo"] = "gemini-2.0-flash"
+
+def limpiar_radios_session():
+    """Limpia las selecciones previas de radio buttons para evitar selecciones fantasma."""
+    keys_a_borrar = [k for k in st.session_state.keys() if k.startswith("radio_alt_")]
+    for k in keys_a_borrar:
+        del st.session_state[k]
 
 def cargar_usuarios():
     if os.path.exists(USERS_FILE):
         try:
             with open(USERS_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except:
+        except (json.JSONDecodeError, IOError):
             return {}
     return {}
 
@@ -156,7 +182,7 @@ def cargar_sesion_persistida():
         try:
             with open(SESSION_FILE, "r", encoding="utf-8") as f:
                 return json.load(f).get("usuario")
-        except:
+        except (json.JSONDecodeError, IOError):
             return None
     return None
 
@@ -168,7 +194,7 @@ def eliminar_sesion_persistida():
     if os.path.exists(SESSION_FILE):
         try:
             os.remove(SESSION_FILE)
-        except:
+        except OSError:
             pass
 
 if "usuario_actual" not in st.session_state:
@@ -182,24 +208,45 @@ if "usuario_actual" not in st.session_state:
 # --- BANCOS DE PREGUNTAS ---
 def guardar_banco(nombre_id, data):
     ruta = os.path.join(DATA_DIR, f"{nombre_id}.json")
+    
+    # Asignar idx_original explícito si no lo tiene
+    for idx, q in enumerate(data.get("preguntas", [])):
+        if "idx_original" not in q:
+            q["idx_original"] = idx
+
     if os.path.exists(ruta):
         try:
             with open(ruta, "r", encoding="utf-8") as f:
                 banco_antiguo = json.load(f)
-            mapa_manuales = {
-                q_ant["pregunta"].strip(): q_ant["correcta"]
-                for q_ant in banco_antiguo.get("preguntas", [])
-                if q_ant.get("correcta") is not None
-            }
-            for q_nueva in data.get("preguntas", []):
-                p_text = q_nueva["pregunta"].strip()
-                if p_text in mapa_manuales and q_nueva.get("correcta") is None:
-                    q_nueva["correcta"] = mapa_manuales[p_text]
-        except:
+            
+            # Indexar correcciones manuales por índice + enunciado
+            mapa_manuales = {}
+            for idx_ant, q_ant in enumerate(banco_antiguo.get("preguntas", [])):
+                if q_ant.get("correcta") is not None:
+                    key_m = f"{q_ant.get('idx_original', idx_ant)}_{q_ant['pregunta'].strip()}"
+                    mapa_manuales[key_m] = q_ant["correcta"]
+            
+            data["falladas"] = banco_antiguo.get("falladas", {})
+
+            for idx_n, q_nueva in enumerate(data.get("preguntas", [])):
+                key_n = f"{q_nueva.get('idx_original', idx_n)}_{q_nueva['pregunta'].strip()}"
+                if key_n in mapa_manuales and q_nueva.get("correcta") is None:
+                    q_nueva["correcta"] = mapa_manuales[key_n]
+        except (json.JSONDecodeError, IOError, KeyError):
             pass
 
     with open(ruta, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
+
+def actualizar_pregunta_individual(nombre_id, idx_original, nueva_correcta):
+    """Actualiza una sola pregunta en el banco persistido por su idx_original."""
+    banco_data = cargar_banco(nombre_id)
+    if banco_data and "preguntas" in banco_data:
+        for q in banco_data["preguntas"]:
+            if q.get("idx_original") == idx_original:
+                q["correcta"] = nueva_correcta
+                break
+        guardar_banco(nombre_id, banco_data)
 
 def cargar_banco(nombre_id):
     ruta = os.path.join(DATA_DIR, f"{nombre_id}.json")
@@ -207,7 +254,7 @@ def cargar_banco(nombre_id):
         try:
             with open(ruta, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except:
+        except (json.JSONDecodeError, IOError):
             return None
     return None
 
@@ -216,14 +263,40 @@ def listar_bancos():
         return []
     return [f.replace(".json", "") for f in os.listdir(DATA_DIR) if f.endswith(".json")]
 
-# --- HISTORIAL ---
-def guardar_resultado_historial(nombre_prueba, puntaje_pct, correctas, total):
+def registrar_preguntas_falladas(nombre_id, preguntas_falladas_orig_indices):
+    """Guarda el historial de preguntas falladas usando los índices originales."""
+    banco_data = cargar_banco(nombre_id)
+    if not banco_data:
+        return
+    if "falladas" not in banco_data:
+        banco_data["falladas"] = {}
+    
+    usuario = st.session_state.usuario_actual or "default"
+    set_falladas = set(banco_data["falladas"].get(usuario, []))
+    set_falladas.update(preguntas_falladas_orig_indices)
+    banco_data["falladas"][usuario] = list(set_falladas)
+    
+    guardar_banco(nombre_id, banco_data)
+
+def limpiar_falladas_resueltas(nombre_id, preguntas_resueltas_orig_ok):
+    """Elimina de la lista de falladas las preguntas respondidas correctamente."""
+    banco_data = cargar_banco(nombre_id)
+    if not banco_data or "falladas" not in banco_data:
+        return
+    usuario = st.session_state.usuario_actual or "default"
+    actuales = set(banco_data["falladas"].get(usuario, []))
+    actuales.difference_update(preguntas_resueltas_orig_ok)
+    banco_data["falladas"][usuario] = list(actuales)
+    guardar_banco(nombre_id, banco_data)
+
+# --- HISTORIAL Y DIAGNÓSTICO POR ÁREAS TEMÁTICAS ---
+def guardar_resultado_historial(nombre_prueba, puntaje_pct, correctas, total, desglose_categorias=None):
     historial = []
     if os.path.exists(HISTORY_FILE):
         try:
             with open(HISTORY_FILE, "r", encoding="utf-8") as f:
                 historial = json.load(f)
-        except:
+        except (json.JSONDecodeError, IOError):
             historial = []
     
     historial.append({
@@ -233,7 +306,8 @@ def guardar_resultado_historial(nombre_prueba, puntaje_pct, correctas, total):
         "prueba": nombre_prueba,
         "puntaje": puntaje_pct,
         "correctas": correctas,
-        "total": total
+        "total": total,
+        "desglose_categorias": desglose_categorias or {}
     })
     
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
@@ -245,71 +319,119 @@ def obtener_historial_reciente():
     try:
         with open(HISTORY_FILE, "r", encoding="utf-8") as f:
             historial = json.load(f)
-    except:
+    except (json.JSONDecodeError, IOError):
         return []
     
     limite_tiempo = datetime.now().timestamp() - (20 * 24 * 60 * 60)
     filtrado = [h for h in historial if h.get("timestamp", 0) >= limite_tiempo and h.get("usuario") == st.session_state.usuario_actual]
     return sorted(filtrado, key=lambda x: x["timestamp"], reverse=True)
 
-# --- MÓDULO DE PROCESAMIENTO CON GEMINI FILE API (NATIVO) ---
-def procesar_pdf_con_vision(pdf_path, api_key, modelo):
-    """Sube el PDF usando la File API de Gemini y extrae las preguntas estructuradas en JSON."""
+# --- PROCESAMIENTO CON GOOGLE FILE API Y DIAGNÓSTICO TEMÁTICO ---
+def limpiar_respuesta_json(texto_raw):
+    """Limpia etiquetas Markdown de bloques JSON devueltos por la IA."""
+    texto_limpio = re.sub(r"^```json\s*", "", texto_raw.strip(), flags=re.MULTILINE)
+    texto_limpio = re.sub(r"^```\s*", "", texto_limpio, flags=re.MULTILINE)
+    texto_limpio = re.sub(r"```$", "", texto_limpio, flags=re.MULTILINE)
+    return texto_limpio.strip()
+
+def procesar_documento_multimodal(file_path, api_key, modelo, file_extension):
+    """
+    Analiza documentos/imágenes con Google File API y visión de Gemini.
+    Soporta archivos grandes (>20MB) y clasifica preguntas en áreas temáticas.
+    """
+    archivo_subido = None
+    client = None
     try:
-        client = genai.Client(api_key=api_key)
-        
-        with st.spinner(f"🚀 Subiendo documento PDF a la API de Gemini (Modelo: {modelo})..."):
-            archivo_subido = client.files.upload(file=pdf_path)
-            
-        with st.spinner("🤖 Analizando y extrayendo preguntas, alternativas y respuestas correctas..."):
+        if not api_key or not api_key.strip():
+            st.error("⚠️ Ingrese una API Key válida antes de procesar.")
+            return None
+
+        client = genai.Client(api_key=api_key.strip())
+
+        # Determinar MIME type dinámicamente según la extensión
+        ext = file_extension.lower().replace(".", "")
+        mime_type = "application/pdf"
+        if ext == "png":
+            mime_type = "image/png"
+        elif ext in ["jpg", "jpeg"]:
+            mime_type = "image/jpeg"
+
+        with st.spinner(f"📤 Subiendo archivo ({ext.upper()}) a Google File API..."):
+            archivo_subido = client.files.upload(
+                file=file_path,
+                config={"mime_type": mime_type}
+            )
+
+        with st.spinner(f"👁️ Gemini ({modelo}) está analizando el documento y clasificando por materias..."):
             prompt = """
-            Analiza este documento PDF completo de un examen o banco de preguntas aeronáutico. 
-            Extrae todas las preguntas, sus respectivas alternativas (A, B, C, D) y determina con precisión la alternativa correcta (identificada por marcas, selecciones, negritas o pautas en el documento).
-            
-            Devuelve la respuesta estrictamente en un formato JSON válido con la siguiente estructura exacta, sin texto adicional:
+            Eres un sistema experto en visión artificial, análisis de exámenes y pedagogía aeronáutica.
+            Tu tarea es analizar VISUALMENTE este documento completo y extraer todas las preguntas, sus alternativas,
+            la respuesta correcta asignada y clasificar cada pregunta por materia/categoría técnica.
+
+            EVALUACIÓN VISUAL, PAUTA Y CATEGORIZACIÓN:
+            1. Examina cada página del documento.
+            2. Identifica la pregunta y sus alternativas (A, B, C, D).
+            3. BUSCA MARCAS VISUALES DE RESPUESTA:
+               - Marcas a mano o lápiz (círculos, cruces, subrayados, vistos).
+               - Marcas de editor de PDF (resaltados amarillos/verdes, círculos rojos, texto en color/negrita).
+               - Pautas impresas en el documento original.
+            4. Registra en 'respuesta_correcta' exactamente la alternativa marcada visualmente en el documento, sin corregir errores del texto original.
+            5. CLASIFICA LA MATERIA en 'categoria': Asigna una categoría aeronáutica oficial a cada pregunta, por ejemplo:
+               - "Reglamentación y Normativa"
+               - "Meteorología Aeronáutica"
+               - "Navegación y Planificación"
+               - "Fisiología y Factores Humanos"
+               - "Aerodinámica y Performance"
+               - "Sistemas y Motores"
+               - "Procedimientos Operativos"
+
+            FORMATO DE SALIDA ESTRICTO (JSON):
+            Devuelve ÚNICAMENTE un objeto JSON válido con la siguiente estructura exacta:
             {
               "preguntas": [
                 {
-                  "pregunta": "Texto completo de la pregunta",
-                  "opciones": ["Texto alternativa A", "Texto alternativa B", "Texto alternativa C", "Texto alternativa D"],
-                  "respuesta_correcta": "A"
+                  "pregunta": "Texto de la pregunta",
+                  "opciones": ["Alternativa A", "Alternativa B", "Alternativa C", "Alternativa D"],
+                  "respuesta_correcta": "A",
+                  "categoria": "Meteorología Aeronáutica"
                 }
               ]
             }
-            Nota: En "respuesta_correcta" coloca únicamente la letra ("A", "B", "C" o "D") de la alternativa correcta.
+            En "respuesta_correcta" indica únicamente la letra ("A", "B", "C" o "D").
             """
-            
+
             response = client.models.generate_content(
                 model=modelo,
                 contents=[archivo_subido, prompt],
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
-                    temperature=0.1
+                    temperature=0.0
                 )
             )
-            
-        try:
-            client.files.delete(name=archivo_subido.name)
-        except:
-            pass
-            
+
         preguntas_finales = []
         if response and response.text:
-            data = json.loads(response.text)
+            json_limpio = limpiar_respuesta_json(response.text)
+            data = json.loads(json_limpio)
+            
             if "preguntas" in data:
-                for q in data["preguntas"]:
+                for idx_q, q in enumerate(data["preguntas"]):
                     enunciado = q.get("pregunta", "")
                     opciones_textos = q.get("opciones", [])
                     letra_corr = str(q.get("respuesta_correcta", "A")).strip().upper()
+                    categoria_q = q.get("categoria", "General").strip()
                     
                     alternativas_formateadas = []
                     correcta_idx = None
                     
                     for idx_a, texto_alt in enumerate(opciones_textos[:4]):
                         letra_let = ['A', 'B', 'C', 'D'][idx_a]
-                        es_correcta = (letra_let == letra_corr or letra_corr in texto_alt.upper())
+                        match_prefijo = bool(re.match(rf"^{letra_corr}[\.\)\-\s]", texto_alt.strip(), re.IGNORECASE))
+                        es_correcta = (letra_let == letra_corr) or match_prefijo
+                        
                         if es_correcta:
                             correcta_idx = idx_a
+                        
                         alternativas_formateadas.append({
                             "letra": letra_let,
                             "texto": texto_alt,
@@ -318,16 +440,63 @@ def procesar_pdf_con_vision(pdf_path, api_key, modelo):
                     
                     if enunciado and len(alternativas_formateadas) >= 2:
                         preguntas_finales.append({
+                            "idx_original": idx_q,
                             "pregunta": enunciado,
                             "alternativas": alternativas_formateadas,
-                            "correcta": correcta_idx
+                            "correcta": correcta_idx,
+                            "categoria": categoria_q
                         })
                         
         return preguntas_finales
 
-    except Exception as e:
-        st.error(f"Error crítico al procesar el PDF con Gemini: {e}")
+    except json.JSONDecodeError as e:
+        st.error(f"Error al decodificar la respuesta JSON del modelo: {e}")
         return None
+    except Exception as e:
+        st.error(f"Error durante el análisis visual con File API: {e}")
+        return None
+    finally:
+        if client and archivo_subido:
+            try:
+                client.files.delete(name=archivo_subido.name)
+            except Exception:
+                pass
+
+# --- EXPLICACIÓN TÉCNICA PEDAGÓGICA (IA) ---
+def obtener_explicacion_ia(pregunta_text, alternativas, idx_correcta, idx_elegida, api_key, modelo):
+    """Genera una explicación pedagógica basada en conceptos aeronáuticos oficiales."""
+    try:
+        client = genai.Client(api_key=api_key.strip())
+        
+        alt_corr_text = "N/A"
+        if idx_correcta is not None and isinstance(idx_correcta, int) and 0 <= idx_correcta < len(alternativas):
+            alt_corr_text = alternativas[idx_correcta]['texto']
+        
+        alt_eleg_text = "Ninguna"
+        if idx_elegida is not None and isinstance(idx_elegida, int) and 0 <= idx_elegida < len(alternativas):
+            alt_eleg_text = alternativas[idx_elegida]['texto']
+        
+        prompt = f"""
+        Eres un instructor de vuelo y experto pedagogo en aviación civil.
+        Explica brevemente y de forma didáctica (máximo 3 párrafos cortos) el fundamento técnico de esta pregunta de examen:
+
+        Pregunta: "{pregunta_text}"
+        Respuesta Correcta Oficial: "{alt_corr_text}"
+        Respuesta Seleccionada por el Alumno: "{alt_eleg_text}"
+
+        Explicación requerida:
+        1. Explica por qué la respuesta oficial es la correcta según los reglamentos (FAR, DAN), principios aerodinámicos, meteorológicos o de CRM.
+        2. Si el alumno respondió incorrectamente, aclara de forma amable cuál fue la confusión o el error común.
+        3. Da un consejo rápido para recordar este concepto en el examen.
+        """
+        response = client.models.generate_content(
+            model=modelo,
+            contents=[prompt],
+            config=types.GenerateContentConfig(temperature=0.3)
+        )
+        return response.text if response else "No se pudo generar la explicación en este momento."
+    except Exception as e:
+        return f"Error al consultar el instructor de IA: {e}"
 
 # --- CONTROL DE ACCESO ---
 if st.session_state.usuario_actual is None:
@@ -381,7 +550,7 @@ with st.sidebar:
     st.caption("Piloto en Entrenamiento")
     st.divider()
     
-    texto_modo = "☀️ Cambiar a Modo Claro" if st.session_state.modo_oscuro else "🌙 Cambiar a Modo Oscuro"
+    texto_modo = "🌙 Activar Modo Lectura Nocturna (Filtro Cálido)" if not st.session_state.modo_oscuro else "☀️ Cambiar a Modo Claro"
     if st.button(texto_modo, use_container_width=True, type="secondary"):
         st.session_state.modo_oscuro = not st.session_state.modo_oscuro
         st.rerun()
@@ -392,15 +561,14 @@ with st.sidebar:
     if not st.session_state["gemini_api_key"]:
         user_input_key = st.text_input("Google Gemini API Key", type="password", help="Ingresa tu clave de AI Studio")
         if user_input_key:
-            st.session_state["gemini_api_key"] = user_input_key
+            st.session_state["gemini_api_key"] = user_input_key.strip()
             st.success("¡API Key guardada!")
 
     modelos_disponibles = [
-        "gemini-3.8-flash",
-        "gemini-2.5-flash",
-        "gemini-2.5-pro",
         "gemini-2.0-flash",
         "gemini-1.5-flash",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
         "gemini-1.5-pro"
     ]
     
@@ -420,7 +588,7 @@ with st.sidebar:
         st.session_state.vista = "home"
         st.session_state.modo_estudio_data = None
         st.rerun()
-    if st.button("📊 Historial de Rendimiento", use_container_width=True):
+    if st.button("📊 Historial y Diagnóstico", use_container_width=True):
         st.session_state.vista = "historial"
         st.rerun()
         
@@ -464,13 +632,13 @@ if st.session_state.vista == "perfil":
                     guardar_usuarios(usuarios_db)
                     st.success("¡Perfil actualizado!")
                     st.rerun()
-    if st.button("⬅️ Volver al Inicio"):
+    if st.button("⬅ Volver al Inicio"):
         st.session_state.vista = "home"
         st.rerun()
 
-# --- VISTA: HISTORIAL ---
+# --- VISTA: HISTORIAL Y DIAGNÓSTICO POR ÁREAS TEMÁTICAS ---
 elif st.session_state.vista == "historial":
-    st.title("📊 Historial de Rendimiento")
+    st.title("📊 Historial de Rendimiento y Diagnóstico por Materias")
     historial = obtener_historial_reciente()
     if not historial:
         st.info("No hay registros recientes en tu historial.")
@@ -482,7 +650,34 @@ elif st.session_state.vista == "historial":
             st.metric(label="Promedio General de Aciertos", value=f"{promedio:.1f}%")
         with col_m2:
             st.metric(label="Pruebas Realizadas", value=len(df_hist))
+        
         st.divider()
+        st.subheader("🎯 Rendimiento Acumulado por Área Temática")
+        
+        cat_stats = {}
+        for reg in historial:
+            for cat, stats in reg.get("desglose_categorias", {}).items():
+                if cat not in cat_stats:
+                    cat_stats[cat] = {"ok": 0, "total": 0}
+                cat_stats[cat]["ok"] += stats.get("ok", 0)
+                cat_stats[cat]["total"] += stats.get("total", 0)
+                
+        if cat_stats:
+            cat_rows = []
+            for cat, data in cat_stats.items():
+                pct = int((data["ok"] / data["total"]) * 100) if data["total"] > 0 else 0
+                cat_rows.append({
+                    "Materia Aeronáutica": cat,
+                    "Aciertos": f"{data['ok']}/{data['total']}",
+                    "Porcentaje de Dominio": f"{pct}%"
+                })
+            df_cat = pd.DataFrame(cat_rows)
+            st.dataframe(df_cat, use_container_width=True)
+        else:
+            st.caption("Completa pruebas clasificadas para ver tu diagnóstico por materias.")
+
+        st.divider()
+        st.subheader("📜 Registro de Pruebas")
         for h in historial:
             with st.container():
                 col1, col2, col3 = st.columns([3, 2, 2])
@@ -494,7 +689,7 @@ elif st.session_state.vista == "historial":
         st.session_state.vista = "home"
         st.rerun()
 
-# --- VISTA: ESTUDIO (EXAMEN) ---
+# --- VISTA: ESTUDIO (EXAMEN Y REPASO ESPACIADO) ---
 elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     estudio = st.session_state.modo_estudio_data
     preguntas = estudio["preguntas"]
@@ -502,7 +697,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     b_id_actual = estudio.get("b_id")
     
     if not preguntas:
-        st.error("Este banco de preguntas está vacío.")
+        st.error("Este banco de preguntas está vacío o no tiene preguntas registradas.")
         if st.button("Volver al Menú Principal"):
             st.session_state.vista = "home"
             st.rerun()
@@ -523,7 +718,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     
     with col_top_gear:
         with st.popover("⚙", help="Editor rápido de la respuesta actual"):
-            st.markdown("#### 🛠️️ Ajuste de Respuesta Correcta")
+            st.markdown("#### 🛠 Ajuste de Respuesta Correcta")
             q_actual_pop = preguntas[idx_actual]
             opciones_textos_pop = [f"{alt['letra']}.- {alt['texto']}" for alt in q_actual_pop["alternativas"]]
             current_correct = q_actual_pop.get("correcta", 0)
@@ -540,11 +735,9 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
             
             if st.button("Guardar Corrección", key=f"btn_pop_save_{idx_actual}", use_container_width=True):
                 q_actual_pop["correcta"] = nueva_corr_sel
+                idx_orig = q_actual_pop.get("idx_original", idx_actual)
                 if b_id_actual:
-                    banco_data = cargar_banco(b_id_actual)
-                    if banco_data:
-                        banco_data["preguntas"] = preguntas
-                        guardar_banco(b_id_actual, banco_data)
+                    actualizar_pregunta_individual(b_id_actual, idx_orig, nueva_corr_sel)
                 st.success("¡Respuesta actualizada y guardada!")
                 st.rerun()
 
@@ -563,6 +756,8 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     st.divider()
 
     q_actual = preguntas[idx_actual]
+    cat_tag = q_actual.get("categoria", "General")
+    st.caption(f"🏷️ Categoría: **{cat_tag}**")
     st.markdown(f"### {idx_actual + 1}.- {q_actual['pregunta']}")
     
     if idx_actual not in resp_dict:
@@ -573,21 +768,25 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     
     opciones_tuplas = [(-1, "Seleccione una alternativa...")] + [(i, f"{alt['letra']}.- {alt['texto']}") for i, alt in enumerate(q_actual["alternativas"])]
     
+    radio_key = f"radio_alt_{idx_actual}"
     seleccion_indice_actual = estado_actual_q.get("elegida", None)
+    
     current_index = 0
     if seleccion_indice_actual is not None:
-        for idx, (orig_i, _) in enumerate(opciones_tuplas):
+        for idx_tup, (orig_i, _) in enumerate(opciones_tuplas):
             if orig_i == seleccion_indice_actual:
-                current_index = idx
+                current_index = idx_tup
                 break
+
+    if radio_key not in st.session_state:
+        st.session_state[radio_key] = opciones_tuplas[current_index]
 
     seleccion_tuple = st.radio(
         "Alternativas disponibles:",
         options=opciones_tuplas,
         format_func=lambda x: x[1],
-        index=current_index,
         disabled=corregido,
-        key=f"radio_alt_{idx_actual}"
+        key=radio_key
     )
     
     seleccion_radio = seleccion_tuple[0]
@@ -605,6 +804,22 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
                 st.success("🎯 ¡Correcto!")
             else:
                 st.error(f"❌ Incorrecto. La respuesta correcta es la alternativa **{letra_correcta}**.")
+
+        with st.expander("💡 Explicación Técnica Pedagógica (Instructor IA)"):
+            if st.button("🔍 Solicitar Explicación al Instructor de Vuelo IA", key=f"btn_exp_ia_{idx_actual}"):
+                if not st.session_state["gemini_api_key"]:
+                    st.error("Configura tu API Key en la barra lateral para consultar al instructor.")
+                else:
+                    with st.spinner("🤖 Generando fundamentación aeronáutica..."):
+                        explicacion = obtener_explicacion_ia(
+                            q_actual["pregunta"],
+                            q_actual["alternativas"],
+                            idx_correcta,
+                            estado_actual_q.get("elegida"),
+                            st.session_state["gemini_api_key"],
+                            st.session_state["gemini_modelo"]
+                        )
+                        st.info(explicacion)
 
     st.write("")
     col_bot1, col_bot2, col_bot3 = st.columns([2, 4, 2])
@@ -639,7 +854,30 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
                     st.rerun()
                 else:
                     puntaje_final = int((respondidas_ok / total_preguntas) * 100) if total_preguntas > 0 else 0
-                    guardar_resultado_historial(estudio["nombre_prueba"], puntaje_final, respondidas_ok, total_preguntas)
+                    
+                    desglose_cat = {}
+                    indices_falladas_orig = []
+                    indices_ok_orig = []
+                    
+                    for i_q, q_item in enumerate(preguntas):
+                        cat = q_item.get("categoria", "General")
+                        if cat not in desglose_cat:
+                            desglose_cat[cat] = {"ok": 0, "total": 0}
+                        desglose_cat[cat]["total"] += 1
+                        
+                        orig_idx = q_item.get("idx_original", i_q)
+                        st_q = resp_dict.get(i_q, {}).get("estado")
+                        if st_q == "correcta":
+                            desglose_cat[cat]["ok"] += 1
+                            indices_ok_orig.append(orig_idx)
+                        else:
+                            indices_falladas_orig.append(orig_idx)
+                            
+                    if b_id_actual:
+                        registrar_preguntas_falladas(b_id_actual, indices_falladas_orig)
+                        limpiar_falladas_resueltas(b_id_actual, indices_ok_orig)
+
+                    guardar_resultado_historial(estudio["nombre_prueba"], puntaje_final, respondidas_ok, total_preguntas, desglose_cat)
                     st.success(f"🎉 ¡Simulación finalizada! Puntaje obtenido: {puntaje_final}% ({respondidas_ok}/{total_preguntas}). Guardado en historial.")
                     if st.button("Volver al Menú Principal", key="btn_fin_menu", use_container_width=True):
                         st.session_state.vista = "home"
@@ -649,45 +887,52 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
 # --- VISTA: HOME ---
 else:
     st.title("📚 AeroStudio Pro - Centro de Pruebas")
-    st.markdown(f"Bienvenido de nuevo, **{datos_usuario['nombre']}**. Sube tus documentos en PDF o selecciona un banco guardado para iniciar tu entrenamiento.")
+    st.markdown(f"Bienvenido de nuevo, **{datos_usuario['nombre']}**. Sube tus documentos en PDF o imágenes escaneadas para iniciar tu entrenamiento.")
     st.divider()
 
-    st.subheader("➕ Importar Nuevo Banco de Preguntas (PDF)")
+    st.subheader("➕ Importar Nuevo Banco de Preguntas (PDF o Imágenes Escaneadas)")
     with st.container():
-        uploaded_file = st.file_uploader("Sube tu documento oficial en PDF", type=["pdf"])
+        uploaded_file = st.file_uploader("Sube tu documento en PDF o imagen escaneada", type=["pdf", "png", "jpg", "jpeg"])
         nombre_nueva_prueba = st.text_input("Título descriptivo de la prueba:", placeholder="Ej. Fisiología de Vuelo PTLA")
         
-        usar_vision_ia = st.checkbox("🧠 Analizar con Gemini AI (File API)", value=True)
+        usar_ia_pauta = st.checkbox("👁️ Analizar documento con Google File API + Visión IA (Clasificación por materias y marcas)", value=True)
         
         st.write("")
         if st.button("Procesar y Generar Banco", type="primary"):
             if uploaded_file and nombre_nueva_prueba:
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-                    tmp_file.write(uploaded_file.getvalue())
-                    tmp_path = tmp_file.name
+                tmp_path = None
+                try:
+                    ext = os.path.splitext(uploaded_file.name)[1]
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp_file:
+                        tmp_file.write(uploaded_file.getvalue())
+                        tmp_path = tmp_file.name
 
-                preguntas_extraidas = []
-                
-                if usar_vision_ia:
-                    if not st.session_state["gemini_api_key"]:
-                        st.error("⚠️ Para usar el análisis con IA debes configurar tu API Key de Gemini.")
+                    preguntas_extraidas = []
+                    
+                    if usar_ia_pauta:
+                        if not st.session_state["gemini_api_key"]:
+                            st.error("⚠️ Para usar el análisis con IA debes configurar tu API Key de Gemini.")
+                        else:
+                            preguntas_extraidas = procesar_documento_multimodal(
+                                tmp_path, 
+                                st.session_state["gemini_api_key"], 
+                                st.session_state["gemini_modelo"],
+                                ext
+                            )
+                    
+                    if preguntas_extraidas:
+                        id_limpio = re.sub(r'[^a-zA-Z0-9_\-]', '_', nombre_nueva_prueba)
+                        guardar_banco(id_limpio, {
+                            "nombre": nombre_nueva_prueba,
+                            "preguntas": preguntas_extraidas
+                        })
+                        st.success(f"¡Éxito! Se estructuraron y procesaron {len(preguntas_extraidas)} preguntas correctamente.")
+                        st.rerun()
                     else:
-                        preguntas_extraidas = procesar_pdf_con_vision(
-                            tmp_path, 
-                            st.session_state["gemini_api_key"], 
-                            st.session_state["gemini_modelo"]
-                        )
-                
-                if preguntas_extraidas:
-                    id_limpio = re.sub(r'[^a-zA-Z0-9_\-]', '_', nombre_nueva_prueba)
-                    guardar_banco(id_limpio, {
-                        "nombre": nombre_nueva_prueba,
-                        "preguntas": preguntas_extraidas
-                    })
-                    st.success(f"¡Éxito! Se extrajeron y procesaron {len(preguntas_extraidas)} preguntas correctamente.")
-                    st.rerun()
-                else:
-                    st.error("No se pudieron extraer preguntas o el archivo requiere revisión.")
+                        st.error("No se pudieron extraer preguntas o el archivo requiere revisión.")
+                finally:
+                    if tmp_path and os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
             else:
                 st.warning("Falta adjuntar el documento o ingresar el título de la prueba.")
                 
@@ -701,27 +946,51 @@ else:
         banco_data = cargar_banco(b_id)
         if not banco_data: continue
         
+        todas_preguntas = list(banco_data.get("preguntas", []))
+        usuario_actual = st.session_state.usuario_actual or "default"
+        indices_falladas = banco_data.get("falladas", {}).get(usuario_actual, [])
+        num_falladas = len(indices_falladas)
+
         with st.container():
-            col1, col2, col3 = st.columns([3, 1.5, 1])
+            col1, col2, col3 = st.columns([3, 1.5, 1.5])
             with col1:
                 st.markdown(f"**{banco_data.get('nombre', b_id)}**")
-                st.caption(f"{len(banco_data.get('preguntas', []))} preguntas")
+                st.caption(f"Total: {len(todas_preguntas)} preguntas | 🔴 Falladas pendientes: {num_falladas}")
             with col2:
                 modo_aleatorio = st.checkbox("🔀 Orden Aleatorio", key=f"rnd_{b_id}")
             with col3:
-                st.write("")
-                if st.button("🚀 Iniciar", key=f"start_{b_id}", use_container_width=True):
-                    preg = list(banco_data.get("preguntas", []))
-                    if modo_aleatorio:
-                        random.shuffle(preg)
-                    if preg:
-                        st.session_state.modo_estudio_data = {
-                            "preguntas": preg, 
-                            "idx_actual": 0,
-                            "b_id": b_id,
-                            "nombre_prueba": banco_data.get('nombre', b_id),
-                            "respuestas_usuario": {}
-                        }
-                        st.session_state.vista = "estudio"
-                        st.rerun()
+                col_btn_a, col_btn_b = st.columns(2)
+                with col_btn_a:
+                    if st.button("🚀 Iniciar", key=f"start_{b_id}", use_container_width=True):
+                        limpiar_radios_session()
+                        preg = list(todas_preguntas)
+                        if modo_aleatorio:
+                            random.shuffle(preg)
+                        if preg:
+                            st.session_state.modo_estudio_data = {
+                                "preguntas": preg, 
+                                "idx_actual": 0,
+                                "b_id": b_id,
+                                "nombre_prueba": banco_data.get('nombre', b_id),
+                                "respuestas_usuario": {}
+                            }
+                            st.session_state.vista = "estudio"
+                            st.rerun()
+                with col_btn_b:
+                    btn_repaso_disabled = (num_falladas == 0)
+                    if st.button("🔴 Repaso", key=f"repaso_{b_id}", disabled=btn_repaso_disabled, help="Estudia solo las preguntas que has fallado previamente", use_container_width=True):
+                        limpiar_radios_session()
+                        preg_repaso = [q for q in todas_preguntas if q.get("idx_original") in indices_falladas]
+                        if modo_aleatorio:
+                            random.shuffle(preg_repaso)
+                        if preg_repaso:
+                            st.session_state.modo_estudio_data = {
+                                "preguntas": preg_repaso,
+                                "idx_actual": 0,
+                                "b_id": b_id,
+                                "nombre_prueba": f"{banco_data.get('nombre', b_id)} (Modo Refuerzo)",
+                                "respuestas_usuario": {}
+                            }
+                            st.session_state.vista = "estudio"
+                            st.rerun()
         st.divider()
