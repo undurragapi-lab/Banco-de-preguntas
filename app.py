@@ -19,7 +19,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- CONFIGURACIÓN PWA INLINE (COMPATIBILIDAD CON CHROME MOBILE) ---
+# --- CONFIGURACIÓN PWA INLINE ---
 manifest_dict = {
     "name": "AeroStudio Pro",
     "short_name": "AeroStudio",
@@ -47,18 +47,20 @@ if "vista" not in st.session_state:
 if "modo_estudio_data" not in st.session_state:
     st.session_state.modo_estudio_data = None
 
-# --- CSS: ESTILO EJECUTIVO AERONÁUTICO (INSPIRADO EN REFERENCIA) ---
+# --- CSS: ESTILO UI EJECUTIVO IDÉNTICO A REFERENCIA ---
 css_light = """
     :root {
-        --bg-main: #f1f5f9;
+        --bg-main: #f8fafc;
         --bg-card: #ffffff;
         --sidebar-bg: #1e293b;
-        --sidebar-text: #f8fafc;
+        --sidebar-text: #94a3b8;
+        --sidebar-text-hover: #ffffff;
         --accent-blue: #2563eb;
         --accent-hover: #1d4ed8;
         --text-main: #0f172a;
         --text-muted: #64748b;
         --border-color: #e2e8f0;
+        --card-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.05);
     }
 """
 
@@ -67,12 +69,14 @@ css_dark = """
         --bg-main: #0b0f19;
         --bg-card: #1e293b;
         --sidebar-bg: #090d16;
-        --sidebar-text: #f8fafc;
+        --sidebar-text: #94a3b8;
+        --sidebar-text-hover: #ffffff;
         --accent-blue: #3b82f6;
         --accent-hover: #2563eb;
         --text-main: #f8fafc;
         --text-muted: #94a3b8;
         --border-color: #334155;
+        --card-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
     }
 """
 
@@ -81,8 +85,6 @@ css_activo = css_dark if st.session_state.modo_oscuro else css_light
 st.markdown(f"""
 <link rel="manifest" href="{manifest_data_uri}">
 <meta name="theme-color" content="#1e293b">
-<meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-capable" content="yes">
 <style>
     {css_activo}
     .stApp {{
@@ -94,31 +96,49 @@ st.markdown(f"""
         background-color: transparent !important;
         z-index: 99999;
     }}
-    /* Estilo barra lateral idéntico al diseño ejecutivo */
+    
+    /* --- BARRA LATERAL LIMPIA SIN BARRAS BLANCAS --- */
     section[data-testid="stSidebar"] {{
         background-color: var(--sidebar-bg) !important;
-        color: var(--sidebar-text) !important;
         border-right: 1px solid var(--border-color);
+        padding-top: 1rem;
     }}
-    section[data-testid="stSidebar"] .stMarkdown, section[data-testid="stSidebar"] span, section[data-testid="stSidebar"] p, section[data-testid="stSidebar"] label {{
+    section[data-testid="stSidebar"] .stMarkdown, section[data-testid="stSidebar"] span, section[data-testid="stSidebar"] p {{
         color: var(--sidebar-text) !important;
     }}
-    button[data-testid="stSidebarCollapseButton"], button[data-testid="baseButton-header"] {{
-        color: var(--text-main) !important;
-        background-color: var(--bg-card) !important;
-        border: 1px solid var(--border-color) !important;
+    
+    /* Convertir botones de navegación del sidebar en enlaces minimalistas tipo app */
+    section[data-testid="stSidebar"] div.stButton > button {{
+        background: transparent !important;
+        color: var(--sidebar-text) !important;
+        border: none !important;
         border-radius: 8px !important;
+        text-align: left !important;
+        padding: 0.6rem 1rem !important;
+        font-weight: 500 !important;
+        box-shadow: none !important;
+        width: 100% !important;
+        transition: all 0.2s ease;
     }}
-    /* Tarjetas contenedoras estilizadas */
-    .st-emotion-cache-1r6slb0, div[data-testid="stVerticalBlock"] > div {{
+    section[data-testid="stSidebar"] div.stButton > button:hover {{
+        background: rgba(255, 255, 255, 0.08) !important;
+        color: var(--sidebar-text-hover) !important;
+        transform: none !important;
+        box-shadow: none !important;
+    }}
+
+    /* --- TARJETAS CONTENEDORAS FLOTANTES --- */
+    div.st-emotion-cache-1r6slb0, div[data-testid="stVerticalBlock"] > div {{
         border-radius: 12px;
     }}
+    
+    /* Botones principales de acción */
     div.stButton > button {{
         background: linear-gradient(135deg, var(--accent-blue) 0%, var(--accent-hover) 100%);
         color: white;
         border: none;
         border-radius: 8px;
-        padding: 0.5rem 1rem;
+        padding: 0.55rem 1.2rem;
         font-weight: 600;
         box-shadow: 0 4px 12px rgba(37, 99, 235, 0.2);
         transition: all 0.2s ease-in-out;
@@ -127,12 +147,8 @@ st.markdown(f"""
         transform: translateY(-1px);
         box-shadow: 0 6px 16px rgba(37, 99, 235, 0.3);
     }}
-    div.stButton > button[kind="secondary"] {{
-        background: var(--bg-card);
-        border: 1px solid var(--border-color);
-        color: var(--text-main);
-        box-shadow: none;
-    }}
+    
+    /* Campos de entrada estilizados */
     .stTextInput input, .stSelectbox select, .stPasswordInput input {{
         background-color: var(--bg-card) !important;
         color: var(--text-main) !important;
@@ -140,23 +156,14 @@ st.markdown(f"""
         border-radius: 8px !important;
         padding: 0.6rem 1rem !important;
     }}
+    
+    /* Métricas con diseño corporativo */
     div[data-testid="metric-container"] {{
         background-color: var(--bg-card);
         border: 1px solid var(--border-color);
         padding: 1.2rem;
         border-radius: 12px;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.04);
-    }}
-    .stRadio label {{
-        padding: 12px;
-        border-radius: 10px;
-        border: 1px solid var(--border-color);
-        background-color: var(--bg-card);
-        transition: all 0.2s;
-    }}
-    .stRadio label:hover {{
-        border-color: var(--accent-blue);
-        background-color: rgba(37, 99, 235, 0.02);
+        box-shadow: var(--card-shadow);
     }}
 </style>
 """, unsafe_allow_html=True)
@@ -194,12 +201,10 @@ def obtener_modelos_activos_live(client):
                 modelos_encontrados.append(nombre_limpio)
     except Exception:
         pass
-    
     respaldos = ["gemini-2.5-flash", "gemini-3.1-pro-preview", "gemini-1.5-flash"]
     for r in respaldos:
         if r not in modelos_encontrados:
             modelos_encontrados.append(r)
-            
     return modelos_encontrados
 
 def ejecutar_gemini_con_fallback(client, contents_payload, config, modelo_preferido):
@@ -216,11 +221,7 @@ def ejecutar_gemini_con_fallback(client, contents_payload, config, modelo_prefer
 
     for modelo in candidatos:
         try:
-            response = client.models.generate_content(
-                model=modelo,
-                contents=contents_payload,
-                config=config
-            )
+            response = client.models.generate_content(model=modelo, contents=contents_payload, config=config)
             st.session_state["gemini_modelo"] = modelo
             return response, modelo
         except Exception as e:
@@ -526,30 +527,29 @@ if st.session_state.usuario_actual is None:
 usuarios_db = cargar_usuarios()
 datos_usuario = usuarios_db.get(st.session_state.usuario_actual, {"nombre": "Piloto", "email": st.session_state.usuario_actual, "password": ""})
 
-# --- BARRA LATERAL (ESTILO EJECUTIVO OSCURO DE REFERENCIA) ---
+# --- BARRA LATERAL (ESTILO EJECUTIVO IDÉNTICO A LA REFERENCIA) ---
 with st.sidebar:
     st.markdown("""
-    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 20px;">
-        <span style="font-size: 24px;">🛩️</span>
-        <span style="font-size: 20px; font-weight: bold; color: #ffffff;">AeroStudio</span>
+    <div style="display: flex; align-items: center; gap: 12px; padding: 0.5rem 0.5rem 1.5rem 0.5rem;">
+        <span style="font-size: 26px;">🛩️</span>
+        <span style="font-size: 20px; font-weight: 700; color: #ffffff; letter-spacing: -0.5px;">AeroStudio</span>
     </div>
     """, unsafe_allow_html=True)
     
-    st.divider()
-    
-    if st.button("👤 Perfil", use_container_width=True, type="secondary"):
+    if st.button("👤 Perfil", use_container_width=True):
         st.session_state.vista = "perfil"
         st.rerun()
-    if st.button("🏠 Panel Principal", use_container_width=True, type="secondary"):
+    if st.button("🏠 Panel Principal", use_container_width=True):
         st.session_state.vista = "home"
         st.session_state.modo_estudio_data = None
         st.rerun()
-    if st.button("📊 Historial", use_container_width=True, type="secondary"):
+    if st.button("📊 Historial", use_container_width=True):
         st.session_state.vista = "historial"
         st.rerun()
         
-    st.divider()
-    st.markdown("### ⚙️ Configuración IA")
+    st.markdown("<div style='margin: 1.5rem 0; border-top: 1px solid rgba(255,255,255,0.1);'></div>", unsafe_allow_html=True)
+    st.markdown("<p style='font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #64748b; padding-left: 10px;'>Configuración IA</p>", unsafe_allow_html=True)
+    
     if not st.session_state["gemini_api_key"]:
         user_input_key = st.text_input("Gemini API Key", type="password")
         if user_input_key:
@@ -557,13 +557,13 @@ with st.sidebar:
             st.success("¡Guardada!")
 
     texto_modo = "🌙 Modo Nocturno" if not st.session_state.modo_oscuro else "☀️ Modo Claro"
-    if st.button(texto_modo, use_container_width=True, type="secondary"):
+    if st.button(texto_modo, use_container_width=True):
         st.session_state.modo_oscuro = not st.session_state.modo_oscuro
         st.rerun()
 
-    st.divider()
+    st.markdown("<div style='margin: 1.5rem 0; border-top: 1px solid rgba(255,255,255,0.1);'></div>", unsafe_allow_html=True)
     st.caption(f"Conectado: {datos_usuario['nombre']}")
-    if st.button("🚪 Logout", type="secondary", use_container_width=True):
+    if st.button("🚪 Logout", use_container_width=True):
         st.session_state.usuario_actual = None
         eliminar_sesion_persistida()
         st.session_state.vista = "home"
@@ -623,7 +623,7 @@ elif st.session_state.vista == "historial":
         st.session_state.vista = "home"
         st.rerun()
 
-# --- VISTA: ESTUDIO (EXAMEN INTERACTIVO) ---
+# --- VISTA: ESTUDIO (EXAMEN INTERACTIVO EXACTO A REFERENCIA) ---
 elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     estudio = st.session_state.modo_estudio_data
     preguntas = estudio["preguntas"]
@@ -643,16 +643,18 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
 
     total_preguntas = len(preguntas)
     respondidas_ok = sum(1 for k, v in resp_dict.items() if v.get("estado") == "correcta")
-    puntaje_porcentaje = int((respondidas_ok / total_preguntas) * 100) if total_preguntas > 0 else 0
     
-    # Barra Superior Ejecutiva dentro del examen (similar a la imagen de referencia)
     q_actual = preguntas[idx_actual]
     
+    # Contenedor Tarjeta Flotante Principal Estilo UI Examen (como en la imagen de referencia)
     st.markdown(f"""
-    <div style="background-color: var(--bg-card); padding: 1.5rem; border-radius: 12px; border: 1px solid var(--border-color); margin-bottom: 1.5rem;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+    <div style="background-color: var(--bg-card); padding: 2rem; border-radius: 16px; border: 1px solid var(--border-color); box-shadow: var(--card-shadow); margin-bottom: 1.5rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
             <span style="font-weight: 600; font-size: 1.1rem; color: var(--text-main);">{estudio['nombre_prueba']}</span>
-            <span style="font-weight: 600; color: var(--text-muted);">Q {idx_actual + 1}/{total_preguntas}</span>
+            <span style="font-weight: 600; color: var(--text-muted); background: var(--bg-main); padding: 4px 12px; border-radius: 20px; font-size: 0.9rem;">Q {idx_actual + 1}/{total_preguntas}</span>
+        </div>
+        <div style="width: 100%; background-color: var(--border-color); height: 6px; border-radius: 3px; margin-bottom: 1.5rem; overflow: hidden;">
+            <div style="width: {int(((idx_actual + 1) / total_preguntas) * 100)}%; background-color: var(--accent-blue); height: 100%; transition: width 0.3s ease;"></div>
         </div>
     </div>
     """, unsafe_allow_html=True)
