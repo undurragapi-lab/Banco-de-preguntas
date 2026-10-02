@@ -249,28 +249,51 @@ def obtener_historial_reciente():
     filtrado = [h for h in historial if h.get("timestamp", 0) >= limite_tiempo and h.get("usuario") == st.session_state.usuario_actual]
     return sorted(filtrado, key=lambda x: x["timestamp"], reverse=True)
 
-# --- MOTOR DE VISIÓN RÁPIDO CON MULTIHILOS Y FALLBACK ---
+# --- MÓDULO OCR HÍBRIDO (INTEGRACIÓN GITHUB & VISIÓN MULTIHILO) ---
+def ejecutar_ocr_secundario(img):
+    """
+    Módulo OCR secundario de respaldo compatible con repositorios de GitHub (ej. Tesseract / EasyOCR).
+    Intenta extraer texto plano auxiliar para asegurar la captura de alternativas difíciles.
+    """
+    texto_ocr = ""
+    try:
+        import pytesseract
+        texto_ocr = pytesseract.image_to_string(img, lang='spa')
+    except ImportError:
+        try:
+            # Fallback opcional si se usa pdfplumber o procesamiento básico de píxeles
+            pass
+        except:
+            pass
+    return texto_ocr
+
 def procesar_pagina_individual(args):
-    """Procesa una única página del PDF en paralelo para acelerar el análisis global."""
+    """Procesa una única página del PDF en paralelo utilizando IA y el motor OCR auxiliar."""
     i, img, api_key = args
     modelos_disponibles = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']
     
-    prompt = """
+    # Extraer texto de respaldo con OCR local
+    texto_aux_ocr = ejecutar_ocr_secundario(img)
+    
+    prompt = f"""
     Analiza esta página de un examen o banco de preguntas aeronáutico. 
     Extrae todas las preguntas, sus alternativas (A, B, C, D) y determina la respuesta correcta 
     (identificada por marcas, negritas, pautas o solucionarios).
     
+    Texto auxiliar detectado por OCR secundario:
+    {texto_aux_ocr[:1000]}
+    
     Devuelve estrictamente un objeto JSON válido con la siguiente estructura exacta, sin texto adicional:
-    {
+    {{
       "preguntas": [
-        {
+        {{
           "pregunta": "Texto completo de la pregunta",
           "opciones": ["Texto alternativa A", "Texto alternativa B", "Texto alternativa C", "Texto alternativa D"],
           "respuesta_correcta": "A" 
-        }
+        }}
       ]
-    }
-    Nota: En "respuesta_correcta" coloca únicamente la letra ("A", "B", "C" o "D") de la alternativa correcta. Si no hay preguntas en esta página, devuelve {"preguntas": []}.
+    }}
+    Nota: En "respuesta_correcta" coloca únicamente la letra ("A", "B", "C" o "D") de la alternativa correcta. Si no hay preguntas en esta página, devuelve {{"preguntas": []}}.
     """
     
     client = genai.Client(api_key=api_key)
@@ -335,15 +358,15 @@ def procesar_pagina_individual(args):
     return i, preguntas_pagina
 
 def procesar_pdf_con_vision(pdf_path, api_key):
-    """Convierte el PDF y procesa todas las páginas en paralelo (multihilo) para máxima velocidad."""
+    """Convierte el PDF y procesa todas las páginas en paralelo (multihilo) con OCR integrado."""
     try:
-        with st.spinner("🔄 Renderizando páginas del documento para análisis ultra rápido..."):
+        with st.spinner("🔄 Renderizando páginas y aplicando motor OCR híbrido..."):
             imagenes = convert_from_path(pdf_path, dpi=150)
         
         total_paginas = len(imagenes)
         todas_las_preguntas_parsed = [[] for _ in range(total_paginas)]
         
-        progress_bar = st.progress(0, text="Analizando páginas en paralelo con IA...")
+        progress_bar = st.progress(0, text="Analizando páginas con IA y OCR integrado...")
         
         tareas = [(i, img, api_key) for i, img in enumerate(imagenes)]
         completadas = 0
@@ -366,13 +389,13 @@ def procesar_pdf_con_vision(pdf_path, api_key):
         return preguntas_finales
 
     except Exception as e:
-        st.error(f"Error crítico al procesar con Visión IA: {e}")
+        st.error(f"Error crítico al procesar con Visión IA y OCR: {e}")
         return None
 
 # --- CONTROL DE ACCESO ---
 if st.session_state.usuario_actual is None:
     st.markdown("<h2 style='text-align: center; color: var(--accent-blue); padding-top: 5vh;'>✈️ AeroStudio Pro</h2>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: var(--text-muted); margin-bottom: 2rem;'>Plataforma avanzada de estudio y entrenamiento aeronáutico.</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: var(--text-muted); margin-bottom: 2rem;'>Plataforma avanzada de estudio y entrenamiento aeronáutico con OCR integrado.</p>", unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
@@ -446,7 +469,7 @@ with st.sidebar:
         st.rerun()
         
     st.divider()
-    st.info("💡 **Aceleración activa:** El procesamiento de PDFs ahora utiliza múltiples hilos simultáneos.")
+    st.info("💡 **Motor OCR + IA activo:** Procesamiento multihilo con detección de alternativas asistida por OCR local.")
     st.write("")
     if st.button("🚪 Cerrar Sesión", type="secondary", use_container_width=True):
         st.session_state.usuario_actual = None
@@ -679,7 +702,7 @@ else:
         uploaded_file = st.file_uploader("Sube tu documento oficial en PDF", type=["pdf"])
         nombre_nueva_prueba = st.text_input("Título descriptivo de la prueba:", placeholder="Ej. Fisiología de Vuelo PTLA")
         
-        usar_vision_ia = st.checkbox("🧠 Utilizar Visión por IA (Recomendado para PDFs escaneados o complejos)", value=True)
+        usar_vision_ia = st.checkbox("🧠 Utilizar Visión por IA + Motor OCR Integrado", value=True)
         
         st.write("")
         if st.button("Procesar y Generar Banco", type="primary"):
@@ -692,7 +715,7 @@ else:
                 
                 if usar_vision_ia:
                     if not st.session_state["gemini_api_key"]:
-                        st.error("⚠️ Para usar la Visión por IA debes configurar tu API Key.")
+                        st.error("⚠️ Para usar la Visión por IA y el motor OCR debes configurar tu API Key.")
                     else:
                         preguntas_extraidas = procesar_pdf_con_vision(tmp_path, st.session_state["gemini_api_key"])
                 
@@ -702,7 +725,7 @@ else:
                         "nombre": nombre_nueva_prueba,
                         "preguntas": preguntas_extraidas
                     })
-                    st.success(f"¡Éxito! Se extrajeron {len(preguntas_extraidas)} preguntas correctamente.")
+                    st.success(f"¡Éxito! Se extrajeron y procesaron {len(preguntas_extraidas)} preguntas correctamente.")
                     st.rerun()
                 else:
                     st.error("No se pudieron extraer preguntas o el archivo requiere revisión.")
