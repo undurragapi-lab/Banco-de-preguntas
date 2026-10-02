@@ -253,7 +253,7 @@ def obtener_historial_reciente():
 def procesar_pagina_individual(args):
     """Procesa una única página del PDF en paralelo para acelerar el análisis global."""
     i, img, api_key = args
-    modelos_disponibles = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']
+    modelos_disponibles = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']
     
     prompt = """
     Analiza esta página de un examen o banco de preguntas aeronáutico. 
@@ -338,7 +338,6 @@ def procesar_pdf_con_vision(pdf_path, api_key):
     """Convierte el PDF y procesa todas las páginas en paralelo (multihilo) para máxima velocidad."""
     try:
         with st.spinner("🔄 Renderizando páginas del documento para análisis ultra rápido..."):
-            # Usamos una resolución optimizada (dpi=150) para acelerar transferencia de imagen sin perder legibilidad
             imagenes = convert_from_path(pdf_path, dpi=150)
         
         total_paginas = len(imagenes)
@@ -346,11 +345,9 @@ def procesar_pdf_con_vision(pdf_path, api_key):
         
         progress_bar = st.progress(0, text="Analizando páginas en paralelo con IA...")
         
-        # Crear tareas para procesamiento concurrente
         tareas = [(i, img, api_key) for i, img in enumerate(imagenes)]
         completadas = 0
         
-        # Ejecutar en paralelo con hasta 4 hilos simultáneos
         with ThreadPoolExecutor(max_workers=4) as executor:
             futures = {executor.submit(procesar_pagina_individual, tarea): tarea[0] for tarea in tareas}
             
@@ -362,7 +359,6 @@ def procesar_pdf_con_vision(pdf_path, api_key):
                 
         progress_bar.empty()
         
-        # Aplanar la lista ordenada de resultados
         preguntas_finales = []
         for p_list in todas_las_preguntas_parsed:
             preguntas_finales.extend(p_list)
