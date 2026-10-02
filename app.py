@@ -88,7 +88,6 @@ st.markdown(f"""
         color: var(--text-main);
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }}
-    /* Mantener visible el botón nativo para colapsar y desplegar la barra lateral */
     header[data-testid="stHeader"] {{
         background-color: transparent !important;
         z-index: 99999;
@@ -169,7 +168,6 @@ if "gemini_modelo" not in st.session_state:
     st.session_state["gemini_modelo"] = "Auto-Seleccionar Modelo Activo"
 
 def obtener_modelos_activos_live(client):
-    """Consulta directamente a Google la lista de modelos activos en tiempo real."""
     modelos_encontrados = []
     try:
         lista_api = client.models.list()
@@ -181,7 +179,6 @@ def obtener_modelos_activos_live(client):
     except Exception:
         pass
     
-    # Respaldos de alta disponibilidad
     respaldos = ["gemini-2.5-flash", "gemini-3.1-pro-preview", "gemini-1.5-flash"]
     for r in respaldos:
         if r not in modelos_encontrados:
@@ -190,10 +187,6 @@ def obtener_modelos_activos_live(client):
     return modelos_encontrados
 
 def ejecutar_gemini_con_fallback(client, contents_payload, config, modelo_preferido):
-    """
-    SISTEMA DE CONEXIÓN ROBUSTO:
-    Maneja errores 404, 503 (Saturación), 429 (Cuota) y salta automáticamente de modelo.
-    """
     modelos_disponibles_live = obtener_modelos_activos_live(client)
     
     candidatos = []
@@ -220,7 +213,7 @@ def ejecutar_gemini_con_fallback(client, contents_payload, config, modelo_prefer
             err_str = str(e).lower()
             if any(k in err_str for k in errores_tolerados):
                 ultimo_error = e
-                time.sleep(0.5)  # Breve pausa pedagógica antes de saltar al siguiente modelo
+                time.sleep(0.5)
                 continue
             else:
                 raise e
@@ -228,7 +221,6 @@ def ejecutar_gemini_con_fallback(client, contents_payload, config, modelo_prefer
     raise ultimo_error
 
 def limpiar_radios_session():
-    """Limpia selecciones previas para evitar selecciones fantasma."""
     keys_a_borrar = [k for k in st.session_state.keys() if k.startswith("radio_alt_")]
     for k in keys_a_borrar:
         del st.session_state[k]
@@ -473,7 +465,6 @@ def procesar_documento_multimodal(file_path, api_key, modelo_preferido, file_ext
                 temperature=0.0
             )
 
-            # Auto-conexión dinámica con tolerancia a saturación (503)
             response, modelo_activo = ejecutar_gemini_con_fallback(
                 client=client,
                 contents_payload=[archivo_subido, prompt],
@@ -825,35 +816,31 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     estado_actual_q = resp_dict[idx_actual]
     corregido = estado_actual_q.get("corregido", False)
     
-    opciones_tuplas = [(-1, "Seleccione una alternativa...")] + [(i, f"{alt['letra']}.- {alt['texto']}") for i, alt in enumerate(q_actual["alternativas"])]
+    # Alternativas limpias sin opción por defecto molesta
+    opciones_tuplas = [(i, f"{alt['letra']}.- {alt['texto']}") for i, alt in enumerate(q_actual["alternativas"])]
     
     radio_key = f"radio_alt_{idx_actual}"
     seleccion_indice_actual = estado_actual_q.get("elegida", None)
     
-    current_index = 0
-    if seleccion_indice_actual is not None:
-        for idx_tup, (orig_i, _) in enumerate(opciones_tuplas):
-            if orig_i == seleccion_indice_actual:
-                current_index = idx_tup
-                break
-
-    if radio_key not in st.session_state:
-        st.session_state[radio_key] = opciones_tuplas[current_index]
+    current_index = None
+    if seleccion_indice_actual is not None and 0 <= seleccion_indice_actual < len(opciones_tuplas):
+        current_index = seleccion_indice_actual
 
     seleccion_tuple = st.radio(
-        "Alternativas disponibles:",
+        "Alternativas:",
         options=opciones_tuplas,
         format_func=lambda x: x[1],
         disabled=corregido,
-        key=radio_key
+        index=current_index,
+        key=radio_key,
+        label_visibility="collapsed"
     )
     
-    seleccion_radio = seleccion_tuple[0]
-    if not corregido:
-        resp_dict[idx_actual]["elegida"] = seleccion_radio if seleccion_radio != -1 else None
+    if seleccion_tuple is not None and not corregido:
+        resp_dict[idx_actual]["elegida"] = seleccion_tuple[0]
 
     if q_actual.get("correcta") is None:
-        st.warning("⚠️ Esta pregunta no tiene respuesta correcta detectada. Haz clic en el engranaje superior ⚙️️ para asignarla.")
+        st.warning("⚠️ Esta pregunta no tiene respuesta correcta detectada. Haz clic en el engranaje superior ⚙ para asignarla.")
 
     if corregido:
         idx_correcta = q_actual.get("correcta")
