@@ -47,7 +47,7 @@ if "vista" not in st.session_state:
 if "modo_estudio_data" not in st.session_state:
     st.session_state.modo_estudio_data = None
 
-# --- CSS: MODO CLARO Y MODO LECTURA NOCTURNA (FILTRO LUZ AZUL) ---
+# --- CSS: MODO CLARO, MODO LECTURA NOCTURNA Y CONTROL DE BARRA LATERAL ---
 css_light = """
     :root {
         --bg-main: #f8fafc;
@@ -88,7 +88,17 @@ st.markdown(f"""
         color: var(--text-main);
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }}
-    header {{visibility: hidden;}}
+    /* Mantener visible el botón nativo para colapsar y desplegar la barra lateral */
+    header[data-testid="stHeader"] {{
+        background-color: transparent !important;
+        z-index: 99999;
+    }}
+    button[data-testid="stSidebarCollapseButton"], button[data-testid="baseButton-header"] {{
+        color: var(--text-main) !important;
+        background-color: var(--bg-card) !important;
+        border: 1px solid var(--border-color) !important;
+        border-radius: 8px !important;
+    }}
     div.stButton > button {{
         background: linear-gradient(135deg, var(--accent-blue) 0%, var(--accent-hover) 100%);
         color: white;
@@ -171,7 +181,7 @@ def obtener_modelos_activos_live(client):
     except Exception:
         pass
     
-    # Respaldos conocidos de alta disponibilidad
+    # Respaldos de alta disponibilidad
     respaldos = ["gemini-2.5-flash", "gemini-3.1-pro-preview", "gemini-1.5-flash"]
     for r in respaldos:
         if r not in modelos_encontrados:
@@ -181,8 +191,8 @@ def obtener_modelos_activos_live(client):
 
 def ejecutar_gemini_con_fallback(client, contents_payload, config, modelo_preferido):
     """
-    SISTEMA DE CONEXIÓN DINÁMICA:
-    Consulta los modelos en vivo de Google y se conecta automáticamente al primero que funcione.
+    SISTEMA DE CONEXIÓN ROBUSTO:
+    Maneja errores 404, 503 (Saturación), 429 (Cuota) y salta automáticamente de modelo.
     """
     modelos_disponibles_live = obtener_modelos_activos_live(client)
     
@@ -195,6 +205,8 @@ def ejecutar_gemini_con_fallback(client, contents_payload, config, modelo_prefer
             candidatos.append(m)
 
     ultimo_error = None
+    errores_tolerados = ["404", "503", "429", "500", "not_found", "not found", "unavailable", "overloaded", "quota", "resource_exhausted"]
+
     for modelo in candidatos:
         try:
             response = client.models.generate_content(
@@ -202,13 +214,13 @@ def ejecutar_gemini_con_fallback(client, contents_payload, config, modelo_prefer
                 contents=contents_payload,
                 config=config
             )
-            # Guarda en la sesión el modelo que realmente funcionó
             st.session_state["gemini_modelo"] = modelo
             return response, modelo
         except Exception as e:
             err_str = str(e).lower()
-            if any(k in err_str for k in ["404", "not_found", "not found", "not available", "no longer available"]):
+            if any(k in err_str for k in errores_tolerados):
                 ultimo_error = e
+                time.sleep(0.5)  # Breve pausa pedagógica antes de saltar al siguiente modelo
                 continue
             else:
                 raise e
@@ -461,7 +473,7 @@ def procesar_documento_multimodal(file_path, api_key, modelo_preferido, file_ext
                 temperature=0.0
             )
 
-            # Auto-conexión dinámica
+            # Auto-conexión dinámica con tolerancia a saturación (503)
             response, modelo_activo = ejecutar_gemini_con_fallback(
                 client=client,
                 contents_payload=[archivo_subido, prompt],
@@ -609,7 +621,7 @@ datos_usuario = usuarios_db.get(st.session_state.usuario_actual, {"nombre": "Pil
 
 # --- BARRA LATERAL ---
 with st.sidebar:
-    st.markdown(f"### 👨‍✈️️ {datos_usuario['nombre']}")
+    st.markdown(f"### 👨‍✈️ {datos_usuario['nombre']}")
     st.caption("Piloto en Entrenamiento")
     st.divider()
     
