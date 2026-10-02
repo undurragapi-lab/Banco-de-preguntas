@@ -4,53 +4,41 @@ import google.generativeai as genai
 from PIL import Image
 import json
 import numpy as np
+import fitz  # PyMuPDF para manejo de PDFs
 
-# Configuración de API conectada a los secretos de Streamlit Cloud
+# Configuración de API
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 
-# Configuración de la interfaz visual
 st.set_page_config(page_title="AeroStudio Pro", layout="centered", page_icon="✈️")
 
-st.title("✈️️ AeroStudio Pro")
+st.title("✈ AeroStudio Pro")
 st.subheader("Lector OMR de Cuestionarios DGAC")
-st.write("Sube una página escaneada. El motor de visión optimizará el contraste del grafito y extraerá la alternativa marcada en formato estructurado.")
+st.write("Sube tu banco de preguntas en PDF o una página en imagen. El motor optimizará el contraste del grafito y extraerá todas las alternativas en formato estructurado.")
 
 def procesar_imagen_memoria(imagen_bytes):
     """
-    Decodifica la imagen subida a la web directamente en memoria RAM,
-    aplica el filtro de alto contraste para grafito y la convierte a formato PIL.
+    Decodifica la imagen, aplica filtro de alto contraste (CLAHE) para el grafito y retorna un objeto PIL.
     """
-    # Convertir bytes a un arreglo de numpy
     nparr = np.frombuffer(imagen_bytes, np.uint8)
-    
-    # Decodificar imagen a formato OpenCV (BGR)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-    # Convertir a escala de grises
     gris = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-    # Aplicar CLAHE (Contrast Limited Adaptive Histogram Equalization)
+    
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     imagen_mejorada = clahe.apply(gris)
-
-    # Convertir de vuelta a espacio de color RGB para compatibilidad con PIL/Gemini
-    img_rgb = cv2.cvtColor(imagen_mejorada, cv2.COLOR_GRAY2RGB)
     
-    # Retornar objeto de imagen nativo, sin guardar archivos temporales
+    img_rgb = cv2.cvtColor(imagen_mejorada, cv2.COLOR_GRAY2RGB)
     return Image.fromarray(img_rgb)
 
 def extraer_cuestionario(imagen_pil):
     """
-    Inyecta la imagen procesada al modelo multimodal y fuerza una salida JSON estricta.
+    Extrae texto y marcas de lápiz estructuradas usando Gemini 1.5 Pro.
     """
     modelo = genai.GenerativeModel('gemini-1.5-pro')
-
     prompt = """
     Eres un sistema experto en OMR (Optical Mark Recognition) y OCR diseñado para procesar exámenes de aviación.
-    Analiza la imagen adjunta. Las respuestas correctas han sido marcadas a mano con lápiz grafito (cruces, círculos, rayas o marcas de verificación sobre o junto a la letra).
+    Analiza la imagen adjunta. Las respuestas correctas han sido marcadas a mano con lápiz grafito.
     
-    Extrae el texto exacto y detecta la marca física.
-    Devuelve ÚNICAMENTE un arreglo JSON válido con la siguiente estructura, sin texto adicional ni formato markdown:
+    Devuelve ÚNICAMENTE un arreglo JSON válido con la siguiente estructura:
     [
       {
         "numero": 1,
@@ -65,35 +53,55 @@ def extraer_cuestionario(imagen_pil):
     ]
     Si no hay marca en una pregunta, asigna null a "respuesta_marcada".
     """
-    
     configuracion = genai.GenerationConfig(response_mime_type="application/json")
     respuesta = modelo.generate_content([prompt, imagen_pil], generation_config=configuracion)
     
     return json.loads(respuesta.text)
 
-# Zona de carga de archivos en la interfaz
-archivo_subido = st.file_uploader("Adjunta tu imagen (JPG, PNG)", type=["jpg", "jpeg", "png"])
+# Interfaz de carga: Ahora incluye PDF
+archivo_subido = st.file_uploader("Adjunta tu documento (PDF, JPG, PNG)", type=["pdf", "jpg", "jpeg", "png"])
 
 if archivo_subido is not None:
-    # Capturar la imagen subida en bytes
     bytes_data = archivo_subido.getvalue()
+    tipo_archivo = archivo_subido.name.split('.')[-1].lower()
     
-    # Mostrar vista previa en la plataforma
-    st.image(bytes_data, caption="Documento Original", use_column_width=True)
-    
-    # Botón de ejecución
-    if st.button("Analizar Respuestas", type="primary", use_container_width=True):
-        with st.spinner("Optimizando trazos de lápiz y ejecutando análisis estructural..."):
+    if st.button("Analizar Documento", type="primary", use_container_width=True):
+        resultados_totales = []
+        
+        with st.spinner("Procesando documento en el motor de visión..."):
             try:
-                # 1. Aumentar contraste del grafito en memoria
-                imagen_procesada_pil = procesar_imagen_memoria(bytes_data)
+                # FLUJO PARA PDF
+                if tipo_archivo == 'pdf':
+                    doc = fitz.open(stream=bytes_data, filetype="pdf")
+                    barra_progreso = st.progress(0)
+                    
+                    for i in range(len(doc)):
+                        # Extraer página como imagen (resolución de 150 DPI para buen balance OCR/rendimiento)
+                        pagina = doc.load_page(i)
+                        pix = pagina.get_pixmap(dpi=150)
+                        bytes_img = pix.tobytes("png")
+                        
+                        # Procesar la imagen de la página
+                        imagen_procesada = procesar_imagen_memoria(bytes_img)
+                        datos_pagina = extraer_cuestionario(imagen_procesada)
+                        
+                        if isinstance(datos_pagina, list):
+                            resultados_totales.extend(datos_pagina)
+                            
+                        # Actualizar barra de progreso
+                        barra_progreso.progress((i + 1) / len(doc))
+                        
+                    st.success(f"¡Lectura exitosa de {len(doc)} páginas!")
                 
-                # 2. Extraer datos con IA
-                datos_json = extraer_cuestionario(imagen_procesada_pil)
-                
-                # 3. Desplegar resultados
-                st.success("¡Lectura de marcas exitosa!")
-                st.json(datos_json)
+                # FLUJO PARA IMAGEN INDIVIDUAL (JPG/PNG)
+                else:
+                    st.image(bytes_data, caption="Documento Original", use_column_width=True)
+                    imagen_procesada = procesar_imagen_memoria(bytes_data)
+                    resultados_totales = extraer_cuestionario(imagen_procesada)
+                    st.success("¡Lectura de marcas exitosa!")
+
+                # Desplegar JSON final consolidado
+                st.json(resultados_totales)
                 
             except Exception as e:
                 st.error(f"Ocurrió un error en el procesamiento: {e}")
