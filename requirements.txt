@@ -3,3 +3,4 @@ opencv-python-headless
 google-generativeai
 pillow
 numpy
+PyMuPDF
