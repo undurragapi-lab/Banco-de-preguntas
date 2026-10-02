@@ -249,83 +249,50 @@ def obtener_historial_reciente():
     filtrado = [h for h in historial if h.get("timestamp", 0) >= limite_tiempo and h.get("usuario") == st.session_state.usuario_actual]
     return sorted(filtrado, key=lambda x: x["timestamp"], reverse=True)
 
-# --- MÓDULO OCR HÍBRIDO (INTEGRACIÓN GITHUB & VISIÓN MULTIHILO) ---
-def ejecutar_ocr_secundario(img):
-    """
-    Módulo OCR secundario de respaldo compatible con repositorios de GitHub (ej. Tesseract / EasyOCR).
-    Intenta extraer texto plano auxiliar para asegurar la captura de alternativas difíciles.
-    """
-    texto_ocr = ""
+# --- MÓDULO DE PROCESAMIENTO CON GEMINI FILE API (NATIVO) ---
+def procesar_pdf_con_vision(pdf_path, api_key):
+    """Sube el PDF usando la File API de Gemini y extrae las preguntas estructuradas en JSON."""
     try:
-        import pytesseract
-        texto_ocr = pytesseract.image_to_string(img, lang='spa')
-    except ImportError:
+        client = genai.Client(api_key=api_key)
+        
+        with st.spinner("🚀 Subiendo documento PDF a la API de Gemini..."):
+            archivo_subido = client.files.upload(file=pdf_path)
+            
+        with st.spinner("🤖 Analizando y extrayendo preguntas, alternativas y respuestas correctas..."):
+            prompt = """
+            Analiza este documento PDF completo de un examen o banco de preguntas aeronáutico. 
+            Extrae todas las preguntas, sus respectivas alternativas (A, B, C, D) y determina con precisión la alternativa correcta (identificada por marcas, selecciones, negritas o pautas en el documento).
+            
+            Devuelve la respuesta estrictamente en un formato JSON válido con la siguiente estructura exacta, sin texto adicional:
+            {
+              "preguntas": [
+                {
+                  "pregunta": "Texto completo de la pregunta",
+                  "opciones": ["Texto alternativa A", "Texto alternativa B", "Texto alternativa C", "Texto alternativa D"],
+                  "respuesta_correcta": "A"
+                }
+              ]
+            }
+            Nota: En "respuesta_correcta" coloca únicamente la letra ("A", "B", "C" o "D") de la alternativa correcta.
+            """
+            
+            response = client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=[archivo_subido, prompt],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.1
+                )
+            )
+            
         try:
-            # Fallback opcional si se usa pdfplumber o procesamiento básico de píxeles
-            pass
+            client.files.delete(name=archivo_subido.name)
         except:
             pass
-    return texto_ocr
-
-def procesar_pagina_individual(args):
-    """Procesa una única página del PDF en paralelo utilizando IA y el motor OCR auxiliar."""
-    i, img, api_key = args
-    modelos_disponibles = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']
-    
-    # Extraer texto de respaldo con OCR local
-    texto_aux_ocr = ejecutar_ocr_secundario(img)
-    
-    prompt = f"""
-    Analiza esta página de un examen o banco de preguntas aeronáutico. 
-    Extrae todas las preguntas, sus alternativas (A, B, C, D) y determina la respuesta correcta 
-    (identificada por marcas, negritas, pautas o solucionarios).
-    
-    Texto auxiliar detectado por OCR secundario:
-    {texto_aux_ocr[:1000]}
-    
-    Devuelve estrictamente un objeto JSON válido con la siguiente estructura exacta, sin texto adicional:
-    {{
-      "preguntas": [
-        {{
-          "pregunta": "Texto completo de la pregunta",
-          "opciones": ["Texto alternativa A", "Texto alternativa B", "Texto alternativa C", "Texto alternativa D"],
-          "respuesta_correcta": "A" 
-        }}
-      ]
-    }}
-    Nota: En "respuesta_correcta" coloca únicamente la letra ("A", "B", "C" o "D") de la alternativa correcta. Si no hay preguntas en esta página, devuelve {{"preguntas": []}}.
-    """
-    
-    client = genai.Client(api_key=api_key)
-    response_text = None
-    
-    for modelo in modelos_disponibles:
-        for intento in range(2):
-            try:
-                response = client.models.generate_content(
-                    model=modelo,
-                    contents=[img, prompt],
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        temperature=0.1
-                    ),
-                )
-                if response and response.text:
-                    response_text = response.text
-                    break
-            except Exception as api_err:
-                if "503" in str(api_err) or "UNAVAILABLE" in str(api_err):
-                    time.sleep(1)
-                    continue
-                else:
-                    break
-        if response_text:
-            break
             
-    preguntas_pagina = []
-    if response_text:
-        try:
-            data = json.loads(response_text)
+        preguntas_finales = []
+        if response and response.text:
+            data = json.loads(response.text)
             if "preguntas" in data:
                 for q in data["preguntas"]:
                     enunciado = q.get("pregunta", "")
@@ -347,55 +314,22 @@ def procesar_pagina_individual(args):
                         })
                     
                     if enunciado and len(alternativas_formateadas) >= 2:
-                        preguntas_pagina.append({
+                        preguntas_finales.append({
                             "pregunta": enunciado,
                             "alternativas": alternativas_formateadas,
                             "correcta": correcta_idx
                         })
-        except:
-            pass
-            
-    return i, preguntas_pagina
-
-def procesar_pdf_con_vision(pdf_path, api_key):
-    """Convierte el PDF y procesa todas las páginas en paralelo (multihilo) con OCR integrado."""
-    try:
-        with st.spinner("🔄 Renderizando páginas y aplicando motor OCR híbrido..."):
-            imagenes = convert_from_path(pdf_path, dpi=150)
-        
-        total_paginas = len(imagenes)
-        todas_las_preguntas_parsed = [[] for _ in range(total_paginas)]
-        
-        progress_bar = st.progress(0, text="Analizando páginas con IA y OCR integrado...")
-        
-        tareas = [(i, img, api_key) for i, img in enumerate(imagenes)]
-        completadas = 0
-        
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            futures = {executor.submit(procesar_pagina_individual, tarea): tarea[0] for tarea in tareas}
-            
-            for future in as_completed(futures):
-                idx_pag, resultado_preguntas = future.result()
-                todas_las_preguntas_parsed[idx_pag] = resultado_preguntas
-                completadas += 1
-                progress_bar.progress(completadas / total_paginas, text=f"Procesadas {completadas} de {total_paginas} páginas...")
-                
-        progress_bar.empty()
-        
-        preguntas_finales = []
-        for p_list in todas_las_preguntas_parsed:
-            preguntas_finales.extend(p_list)
-            
+                        
         return preguntas_finales
 
     except Exception as e:
-        st.error(f"Error crítico al procesar con Visión IA y OCR: {e}")
+        st.error(f"Error crítico al procesar el PDF con Gemini: {e}")
         return None
 
 # --- CONTROL DE ACCESO ---
 if st.session_state.usuario_actual is None:
     st.markdown("<h2 style='text-align: center; color: var(--accent-blue); padding-top: 5vh;'>✈️ AeroStudio Pro</h2>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: var(--text-muted); margin-bottom: 2rem;'>Plataforma avanzada de estudio y entrenamiento aeronáutico con OCR integrado.</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: var(--text-muted); margin-bottom: 2rem;'>Plataforma avanzada de estudio y entrenamiento aeronáutico con IA integrada.</p>", unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
@@ -440,7 +374,7 @@ datos_usuario = usuarios_db.get(st.session_state.usuario_actual, {"nombre": "Pil
 
 # --- BARRA LATERAL ---
 with st.sidebar:
-    st.markdown(f"### 👨‍✈ {datos_usuario['nombre']}")
+    st.markdown(f"### 👨‍✈️ {datos_usuario['nombre']}")
     st.caption("Piloto en Entrenamiento")
     st.divider()
     
@@ -462,14 +396,14 @@ with st.sidebar:
         st.rerun()
     if st.button("🏠 Panel Principal", use_container_width=True):
         st.session_state.vista = "home"
-        st.session_state.prueba_activa = None
+        st.session_state.modo_estudio_data = None
         st.rerun()
     if st.button("📊 Historial de Rendimiento", use_container_width=True):
         st.session_state.vista = "historial"
         st.rerun()
         
     st.divider()
-    st.info("💡 **Motor OCR + IA activo:** Procesamiento multihilo con detección de alternativas asistida por OCR local.")
+    st.info("💡 **Análisis con Gemini AI:** Procesamiento inteligente directo desde archivos PDF.")
     st.write("")
     if st.button("🚪 Cerrar Sesión", type="secondary", use_container_width=True):
         st.session_state.usuario_actual = None
@@ -593,13 +527,13 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
                 st.rerun()
 
     with col_top2:
-        with st.popover("🔢 Cuadrícula de Preguntas", help="Ver estado de todas las preguntas"):
+        with st.popover("🔢 Cuadrícula", help="Ver estado de todas las preguntas"):
             cols_grid = st.columns(5)
             for i in range(total_preguntas):
                 estado_q = resp_dict.get(i, {}).get("estado")
                 label_btn = f"🔵 {i+1}" if i == idx_actual else (f"🟢 {i+1}" if estado_q == "correcta" else (f"🔴 {i+1}" if estado_q == "incorrecta" else (f"⚪ {i+1}" if estado_q == "omitida" else f"⚫ {i+1}")))
                 with cols_grid[i % 5]:
-                    if st.button(label_btn, key=f"grid_{i}", use_container_width=True):
+                    if st.button(label_btn, key=f"grid_q_{i}", use_container_width=True):
                         estudio["idx_actual"] = i
                         st.rerun()
 
@@ -653,7 +587,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     st.write("")
     col_bot1, col_bot2, col_bot3 = st.columns([2, 4, 2])
     with col_bot1:
-        if st.button("⬅️ Omitir", type="secondary", use_container_width=True):
+        if st.button("⬅ Omitir", key=f"btn_omitir_{idx_actual}", type="secondary", use_container_width=True):
             resp_dict[idx_actual]["estado"] = "omitida"
             resp_dict[idx_actual]["corregido"] = True
             if idx_actual < total_preguntas - 1:
@@ -663,8 +597,8 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
                 st.warning("Has llegado al final de la prueba.")
 
     with col_bot3:
-        texto_boton = "Siguiente ➡️" if corregido else "Validar Respuesta"
-        if st.button(texto_boton, type="primary", use_container_width=True):
+        texto_boton = "Siguiente ➡" if corregido else "Validar Respuesta"
+        if st.button(texto_boton, key=f"btn_validar_{idx_actual}", type="primary", use_container_width=True):
             if not corregido:
                 idx_correcta = q_actual.get("correcta")
                 seleccion_actual = resp_dict[idx_actual].get("elegida")
@@ -685,9 +619,8 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
                     puntaje_final = int((respondidas_ok / total_preguntas) * 100) if total_preguntas > 0 else 0
                     guardar_resultado_historial(estudio["nombre_prueba"], puntaje_final, respondidas_ok, total_preguntas)
                     st.success(f"🎉 ¡Simulación finalizada! Puntaje obtenido: {puntaje_final}% ({respondidas_ok}/{total_preguntas}). Guardado en historial.")
-                    if st.button("Volver al Menú Principal", use_container_width=True):
+                    if st.button("Volver al Menú Principal", key="btn_fin_menu", use_container_width=True):
                         st.session_state.vista = "home"
-                        st.session_state.prueba_activa = None
                         st.session_state.modo_estudio_data = None
                         st.rerun()
 
@@ -702,7 +635,7 @@ else:
         uploaded_file = st.file_uploader("Sube tu documento oficial en PDF", type=["pdf"])
         nombre_nueva_prueba = st.text_input("Título descriptivo de la prueba:", placeholder="Ej. Fisiología de Vuelo PTLA")
         
-        usar_vision_ia = st.checkbox("🧠 Utilizar Visión por IA + Motor OCR Integrado", value=True)
+        usar_vision_ia = st.checkbox("🧠 Analizar con Gemini AI (File API)", value=True)
         
         st.write("")
         if st.button("Procesar y Generar Banco", type="primary"):
@@ -715,7 +648,7 @@ else:
                 
                 if usar_vision_ia:
                     if not st.session_state["gemini_api_key"]:
-                        st.error("⚠️ Para usar la Visión por IA y el motor OCR debes configurar tu API Key.")
+                        st.error("⚠️ Para usar el análisis con IA debes configurar tu API Key de Gemini.")
                     else:
                         preguntas_extraidas = procesar_pdf_con_vision(tmp_path, st.session_state["gemini_api_key"])
                 
