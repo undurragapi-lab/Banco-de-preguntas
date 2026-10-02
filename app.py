@@ -46,6 +46,8 @@ if "vista" not in st.session_state:
     st.session_state.vista = "home"
 if "modo_estudio_data" not in st.session_state:
     st.session_state.modo_estudio_data = None
+if "usuario_actual" not in st.session_state:
+    st.session_state.usuario_actual = None
 
 # --- CSS: ESTILO UI EJECUTIVO IDÉNTICO A REFERENCIA ---
 css_light = """
@@ -127,11 +129,6 @@ st.markdown(f"""
         box-shadow: none !important;
     }}
 
-    /* --- TARJETAS CONTENEDORAS FLOTANTES --- */
-    div.st-emotion-cache-1r6slb0, div[data-testid="stVerticalBlock"] > div {{
-        border-radius: 12px;
-    }}
-    
     /* Botones principales de acción */
     div.stButton > button {{
         background: linear-gradient(135deg, var(--accent-blue) 0%, var(--accent-hover) 100%);
@@ -272,13 +269,11 @@ def eliminar_sesion_persistida():
         except OSError:
             pass
 
-if "usuario_actual" not in st.session_state:
+if st.session_state.usuario_actual is None:
     saved_user = cargar_sesion_persistida()
     usuarios_db_temp = cargar_usuarios()
     if saved_user and saved_user in usuarios_db_temp:
         st.session_state.usuario_actual = saved_user
-    else:
-        st.session_state.usuario_actual = None
 
 # --- BANCOS DE PREGUNTAS ---
 def guardar_banco(nombre_id, data):
@@ -623,7 +618,7 @@ elif st.session_state.vista == "historial":
         st.session_state.vista = "home"
         st.rerun()
 
-# --- VISTA: ESTUDIO (EXAMEN INTERACTIVO EXACTO A REFERENCIA) ---
+# --- VISTA: ESTUDIO (EXAMEN INTERACTIVO CON LIMPIEZA DE ALTERNATIVAS) ---
 elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     estudio = st.session_state.modo_estudio_data
     preguntas = estudio["preguntas"]
@@ -646,7 +641,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     
     q_actual = preguntas[idx_actual]
     
-    # Contenedor Tarjeta Flotante Principal Estilo UI Examen (como en la imagen de referencia)
+    # Contenedor Tarjeta Flotante Principal Estilo UI Examen
     st.markdown(f"""
     <div style="background-color: var(--bg-card); padding: 2rem; border-radius: 16px; border: 1px solid var(--border-color); box-shadow: var(--card-shadow); margin-bottom: 1.5rem;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
@@ -659,10 +654,9 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     </div>
     """, unsafe_allow_html=True)
     
-    # Herramientas de control rápido superiores (Engranaje y Cuadrícula numérica)
     col_ctrl1, col_ctrl2 = st.columns([1, 1])
     with col_ctrl1:
-        with st.popover("⚙️ Ajustar Respuesta Correcta", help="Modifica la respuesta correcta si el documento tiene un error"):
+        with st.popover("⚙️️ Ajustar Respuesta Correcta", help="Modifica la respuesta correcta si el documento tiene un error"):
             st.markdown("#### Corrección Manual")
             opciones_textos_pop = [f"{alt['letra']}.- {alt['texto']}" for alt in q_actual["alternativas"]]
             current_correct = q_actual.get("correcta", 0)
@@ -695,6 +689,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     
     seleccion_indice_actual = estado_actual_q.get("elegida", None)
     
+    # --- RADIO SIN OPCIÓN POR DEFECTO NI ETIQUETA ---
     seleccion_tuple = st.radio(
         "Alternativas:",
         options=opciones_tuplas,
