@@ -124,7 +124,7 @@ SESSION_FILE = "sesion_activa.json"
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# --- GESTIÓN DE API KEY DE GEMINI ---
+# --- GESTIÓN DE CONFIGURACIÓN DE GEMINI ---
 api_key_configurada = ""
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -134,6 +134,9 @@ except Exception:
 
 if "gemini_api_key" not in st.session_state:
     st.session_state["gemini_api_key"] = api_key_configurada
+
+if "gemini_modelo" not in st.session_state:
+    st.session_state["gemini_modelo"] = "gemini-3.8-flash"
 
 def cargar_usuarios():
     if os.path.exists(USERS_FILE):
@@ -250,12 +253,12 @@ def obtener_historial_reciente():
     return sorted(filtrado, key=lambda x: x["timestamp"], reverse=True)
 
 # --- MÓDULO DE PROCESAMIENTO CON GEMINI FILE API (NATIVO) ---
-def procesar_pdf_con_vision(pdf_path, api_key):
+def procesar_pdf_con_vision(pdf_path, api_key, modelo):
     """Sube el PDF usando la File API de Gemini y extrae las preguntas estructuradas en JSON."""
     try:
         client = genai.Client(api_key=api_key)
         
-        with st.spinner("🚀 Subiendo documento PDF a la API de Gemini..."):
+        with st.spinner(f"🚀 Subiendo documento PDF a la API de Gemini (Modelo: {modelo})..."):
             archivo_subido = client.files.upload(file=pdf_path)
             
         with st.spinner("🤖 Analizando y extrayendo preguntas, alternativas y respuestas correctas..."):
@@ -277,7 +280,7 @@ def procesar_pdf_con_vision(pdf_path, api_key):
             """
             
             response = client.models.generate_content(
-                model='gemini-2.5-flash',
+                model=modelo,
                 contents=[archivo_subido, prompt],
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
@@ -383,12 +386,31 @@ with st.sidebar:
         st.session_state.modo_oscuro = not st.session_state.modo_oscuro
         st.rerun()
 
+    st.divider()
+    st.markdown("### ⚙️ Configuración de IA")
+    
     if not st.session_state["gemini_api_key"]:
-        st.divider()
         user_input_key = st.text_input("Google Gemini API Key", type="password", help="Ingresa tu clave de AI Studio")
         if user_input_key:
             st.session_state["gemini_api_key"] = user_input_key
             st.success("¡API Key guardada!")
+
+    modelos_disponibles = [
+        "gemini-3.8-flash",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+        "gemini-1.5-pro"
+    ]
+    
+    modelo_seleccionado = st.selectbox(
+        "Modelo de Gemini:",
+        options=modelos_disponibles,
+        index=modelos_disponibles.index(st.session_state["gemini_modelo"]) if st.session_state["gemini_modelo"] in modelos_disponibles else 0,
+        help="Selecciona el modelo que prefieras usar."
+    )
+    st.session_state["gemini_modelo"] = modelo_seleccionado
 
     st.divider()
     if st.button("👤 Perfil de Usuario", use_container_width=True):
@@ -403,7 +425,7 @@ with st.sidebar:
         st.rerun()
         
     st.divider()
-    st.info("💡 **Análisis con Gemini AI:** Procesamiento inteligente directo desde archivos PDF.")
+    st.info(f"💡 **Modelo activo:** `{st.session_state['gemini_modelo']}`")
     st.write("")
     if st.button("🚪 Cerrar Sesión", type="secondary", use_container_width=True):
         st.session_state.usuario_actual = None
@@ -501,7 +523,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     
     with col_top_gear:
         with st.popover("⚙", help="Editor rápido de la respuesta actual"):
-            st.markdown("#### 🛠️ Ajuste de Respuesta Correcta")
+            st.markdown("#### 🛠️️ Ajuste de Respuesta Correcta")
             q_actual_pop = preguntas[idx_actual]
             opciones_textos_pop = [f"{alt['letra']}.- {alt['texto']}" for alt in q_actual_pop["alternativas"]]
             current_correct = q_actual_pop.get("correcta", 0)
@@ -650,7 +672,11 @@ else:
                     if not st.session_state["gemini_api_key"]:
                         st.error("⚠️ Para usar el análisis con IA debes configurar tu API Key de Gemini.")
                     else:
-                        preguntas_extraidas = procesar_pdf_con_vision(tmp_path, st.session_state["gemini_api_key"])
+                        preguntas_extraidas = procesar_pdf_con_vision(
+                            tmp_path, 
+                            st.session_state["gemini_api_key"], 
+                            st.session_state["gemini_modelo"]
+                        )
                 
                 if preguntas_extraidas:
                     id_limpio = re.sub(r'[^a-zA-Z0-9_\-]', '_', nombre_nueva_prueba)
