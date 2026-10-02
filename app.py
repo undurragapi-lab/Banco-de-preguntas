@@ -144,7 +144,7 @@ SESSION_FILE = "sesion_activa.json"
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# --- CONFIGURACIÓN Y MODELOS GEMINI CON AUTO-FALLBACK ---
+# --- CONFIGURACIÓN Y DESCUBRIMIENTO DINÁMICO DE GEMINI ---
 api_key_configurada = ""
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -155,45 +155,68 @@ except Exception:
 if "gemini_api_key" not in st.session_state:
     st.session_state["gemini_api_key"] = api_key_configurada
 
-# Lista ordenada de modelos recomendados (prioriza el más reciente de Google)
-modelos_disponibles = [
-    "gemini-3.8-flash",
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-2.5-pro"
-]
+if "gemini_modelo" not in st.session_state:
+    st.session_state["gemini_modelo"] = "Auto-Seleccionar Modelo Activo"
 
-if "gemini_modelo" not in st.session_state or st.session_state["gemini_modelo"] not in modelos_disponibles:
-    st.session_state["gemini_modelo"] = "gemini-3.8-flash"
+def obtener_modelos_activos_live(client):
+    """Consulta directamente a Google la lista de modelos activos en tiempo real."""
+    modelos_encontrados = []
+    try:
+        lista_api = client.models.list()
+        for m in lista_api:
+            nombre = getattr(m, 'name', '') or str(m)
+            nombre_limpio = nombre.replace("models/", "")
+            if "gemini" in nombre_limpio.lower() and not any(x in nombre_limpio.lower() for x in ["embedding", "imagen", "tts", "stt", "bison"]):
+                modelos_encontrados.append(nombre_limpio)
+    except Exception:
+        pass
+    
+    # Respaldos conocidos de alta disponibilidad
+    respaldos = ["gemini-2.5-flash", "gemini-3.1-pro-preview", "gemini-1.5-flash"]
+    for r in respaldos:
+        if r not in modelos_encontrados:
+            modelos_encontrados.append(r)
+            
+    return modelos_encontrados
 
 def ejecutar_gemini_con_fallback(client, contents_payload, config, modelo_preferido):
     """
-    SISTEMA DE AUTO-SELECCIÓN Y REDUNDANCIA:
-    Si el modelo solicitado devuelve 404 o no está disponible, prueba automáticamente
-    con los siguientes modelos de la lista hasta encontrar uno que responda con éxito.
+    SISTEMA DE CONEXIÓN DINÁMICA:
+    Consulta los modelos en vivo de Google y se conecta automáticamente al primero que funcione.
     """
-    modelos_candidatos = [modelo_preferido] + [m for m in modelos_disponibles if m != modelo_preferido]
-    ultimo_error = None
+    modelos_disponibles_live = obtener_modelos_activos_live(client)
+    
+    candidatos = []
+    if modelo_preferido and modelo_preferido != "Auto-Seleccionar Modelo Activo" and modelo_preferido in modelos_disponibles_live:
+        candidatos.append(modelo_preferido)
+    
+    for m in modelos_disponibles_live:
+        if m not in candidatos:
+            candidatos.append(m)
 
-    for modelo in modelos_candidatos:
+    ultimo_error = None
+    for modelo in candidatos:
         try:
             response = client.models.generate_content(
                 model=modelo,
                 contents=contents_payload,
                 config=config
             )
+            # Guarda en la sesión el modelo que realmente funcionó
+            st.session_state["gemini_modelo"] = modelo
             return response, modelo
         except Exception as e:
             err_str = str(e).lower()
-            if "404" in err_str or "not_found" in err_str or "not found" in err_str or "available" in err_str:
+            if any(k in err_str for k in ["404", "not_found", "not found", "not available", "no longer available"]):
                 ultimo_error = e
                 continue
             else:
                 raise e
+                
     raise ultimo_error
 
 def limpiar_radios_session():
-    """Limpia las selecciones previas de radio buttons para evitar selecciones fantasma."""
+    """Limpia selecciones previas para evitar selecciones fantasma."""
     keys_a_borrar = [k for k in st.session_state.keys() if k.startswith("radio_alt_")]
     for k in keys_a_borrar:
         del st.session_state[k]
@@ -365,7 +388,7 @@ def obtener_historial_reciente():
     filtrado = [h for h in historial if h.get("timestamp", 0) >= limite_tiempo and h.get("usuario") == st.session_state.usuario_actual]
     return sorted(filtrado, key=lambda x: x["timestamp"], reverse=True)
 
-# --- PROCESAMIENTO CON GOOGLE FILE API, VISIÓN Y AUTO-FALLBACK ---
+# --- PROCESAMIENTO CON GOOGLE FILE API, VISIÓN Y AUTO-CONEXIÓN ---
 def limpiar_respuesta_json(texto_raw):
     texto_limpio = re.sub(r"^```json\s*", "", texto_raw.strip(), flags=re.MULTILINE)
     texto_limpio = re.sub(r"^```\s*", "", texto_limpio, flags=re.MULTILINE)
@@ -395,7 +418,7 @@ def procesar_documento_multimodal(file_path, api_key, modelo_preferido, file_ext
                 config={"mime_type": mime_type}
             )
 
-        with st.spinner("👁️ Analizando documento con IA (Con auto-selección de modelo activo)..."):
+        with st.spinner("👁 Conectando dinámicamente con Gemini y analizando documento..."):
             prompt = """
             Eres un sistema experto en visión artificial, análisis de exámenes y pedagogía aeronáutica.
             Tu tarea es analizar VISUALMENTE este documento completo y extraer todas las preguntas, sus alternativas,
@@ -438,8 +461,8 @@ def procesar_documento_multimodal(file_path, api_key, modelo_preferido, file_ext
                 temperature=0.0
             )
 
-            # Ejecución con auto-fallback
-            response, modelo_usado = ejecutar_gemini_con_fallback(
+            # Auto-conexión dinámica
+            response, modelo_activo = ejecutar_gemini_con_fallback(
                 client=client,
                 contents_payload=[archivo_subido, prompt],
                 config=config,
@@ -490,7 +513,7 @@ def procesar_documento_multimodal(file_path, api_key, modelo_preferido, file_ext
         st.error(f"Error al decodificar la respuesta JSON del modelo: {e}")
         return None
     except Exception as e:
-        st.error(f"Error durante el análisis visual con la API de Gemini: {e}")
+        st.error(f"Error durante la conexión con Gemini: {e}")
         return None
     finally:
         if client and archivo_subido:
@@ -499,7 +522,7 @@ def procesar_documento_multimodal(file_path, api_key, modelo_preferido, file_ext
             except Exception:
                 pass
 
-# --- EXPLICACIÓN TÉCNICA PEDAGÓGICA (IA) CON FALLBACK ---
+# --- EXPLICACIÓN TÉCNICA PEDAGÓGICA (IA) CON CONEXIÓN DINÁMICA ---
 def obtener_explicacion_ia(pregunta_text, alternativas, idx_correcta, idx_elegida, api_key, modelo_preferido):
     try:
         client = genai.Client(api_key=api_key.strip())
@@ -586,7 +609,7 @@ datos_usuario = usuarios_db.get(st.session_state.usuario_actual, {"nombre": "Pil
 
 # --- BARRA LATERAL ---
 with st.sidebar:
-    st.markdown(f"### 👨‍✈️ {datos_usuario['nombre']}")
+    st.markdown(f"### 👨‍✈️️ {datos_usuario['nombre']}")
     st.caption("Piloto en Entrenamiento")
     st.divider()
     
@@ -604,14 +627,6 @@ with st.sidebar:
             st.session_state["gemini_api_key"] = user_input_key.strip()
             st.success("¡API Key guardada!")
 
-    modelo_seleccionado = st.selectbox(
-        "Modelo Preferido de Gemini:",
-        options=modelos_disponibles,
-        index=modelos_disponibles.index(st.session_state["gemini_modelo"]) if st.session_state["gemini_modelo"] in modelos_disponibles else 0,
-        help="Si el modelo preferido no responde, la app usará automáticamente un modelo compatible activo."
-    )
-    st.session_state["gemini_modelo"] = modelo_seleccionado
-
     st.divider()
     if st.button("👤 Perfil de Usuario", use_container_width=True):
         st.session_state.vista = "perfil"
@@ -625,7 +640,7 @@ with st.sidebar:
         st.rerun()
         
     st.divider()
-    st.info(f"💡 **Modelo activo:** `{st.session_state['gemini_modelo']}`")
+    st.info(f"🟢 **Estado Conexión:** `{st.session_state['gemini_modelo']}`")
     st.write("")
     if st.button("🚪 Cerrar Sesión", type="secondary", use_container_width=True):
         st.session_state.usuario_actual = None
@@ -826,7 +841,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
         resp_dict[idx_actual]["elegida"] = seleccion_radio if seleccion_radio != -1 else None
 
     if q_actual.get("correcta") is None:
-        st.warning("⚠️ Esta pregunta no tiene respuesta correcta detectada. Haz clic en el engranaje superior ⚙️ para asignarla.")
+        st.warning("⚠️ Esta pregunta no tiene respuesta correcta detectada. Haz clic en el engranaje superior ⚙️️ para asignarla.")
 
     if corregido:
         idx_correcta = q_actual.get("correcta")
@@ -927,7 +942,7 @@ else:
         uploaded_file = st.file_uploader("Sube tu documento en PDF o imagen escaneada", type=["pdf", "png", "jpg", "jpeg"])
         nombre_nueva_prueba = st.text_input("Título descriptivo de la prueba:", placeholder="Ej. Fisiología de Vuelo PTLA")
         
-        usar_ia_pauta = st.checkbox("👁️️ Analizar documento con Google File API + Visión IA (Clasificación por materias y marcas)", value=True)
+        usar_ia_pauta = st.checkbox("👁 Analizar documento con Google File API + Visión IA (Clasificación por materias y marcas)", value=True)
         
         st.write("")
         if st.button("Procesar y Generar Banco", type="primary"):
