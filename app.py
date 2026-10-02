@@ -25,8 +25,8 @@ manifest_dict = {
     "short_name": "AeroStudio",
     "start_url": "/",
     "display": "standalone",
-    "background_color": "#171514",
-    "theme_color": "#d97706",
+    "background_color": "#1c1917",
+    "theme_color": "#b45309",
     "icons": [
         {
             "src": "https://img.icons8.com/color/512/airplane-take-off.png",
@@ -47,7 +47,7 @@ if "vista" not in st.session_state:
 if "modo_estudio_data" not in st.session_state:
     st.session_state.modo_estudio_data = None
 
-# --- CSS: MODO CLARO, MODO LECTURA NOCTURNA Y CONTROL DE BARRA LATERAL ---
+# --- CSS: MODO CLARO Y MODO OSCURO SEPIA (ESTILO ELEGANTE MODERNO) ---
 css_light = """
     :root {
         --bg-main: #f8fafc;
@@ -63,14 +63,14 @@ css_light = """
 
 css_dark = """
     :root {
-        --bg-main: #171514;
-        --bg-card: #23201e;
+        --bg-main: #1c1917;
+        --bg-card: #272421;
         --accent-blue: #d97706;
         --accent-hover: #b45309;
         --text-main: #f5efe6;
-        --text-muted: #a8a29e;
-        --border-color: #3f3835;
-        --sidebar-bg: #1c1917;
+        --text-muted: #d6ccc2;
+        --border-color: #443e3a;
+        --sidebar-bg: #171412;
     }
 """
 
@@ -88,7 +88,7 @@ st.markdown(f"""
         color: var(--text-main);
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }}
-    /* Mantener visible el botón nativo para colapsar y desplegar la barra lateral */
+    /* Barra superior elegante y botones nativos controlados */
     header[data-testid="stHeader"] {{
         background-color: transparent !important;
         z-index: 99999;
@@ -97,20 +97,21 @@ st.markdown(f"""
         color: var(--text-main) !important;
         background-color: var(--bg-card) !important;
         border: 1px solid var(--border-color) !important;
-        border-radius: 8px !important;
+        border-radius: 10px !important;
     }}
     div.stButton > button {{
         background: linear-gradient(135deg, var(--accent-blue) 0%, var(--accent-hover) 100%);
         color: white;
         border: none;
-        border-radius: 8px;
-        padding: 0.6rem 1.2rem;
+        border-radius: 10px;
+        padding: 0.6rem 1.4rem;
         font-weight: 600;
-        box-shadow: 0 4px 12px rgba(217, 119, 6, 0.15);
+        box-shadow: 0 4px 14px rgba(2, 132, 199, 0.2);
         transition: all 0.2s ease-in-out;
     }}
     div.stButton > button:hover {{
         transform: translateY(-2px);
+        box-shadow: 0 6px 18px rgba(2, 132, 199, 0.3);
     }}
     div.stButton > button[kind="secondary"] {{
         background: var(--bg-card);
@@ -122,7 +123,7 @@ st.markdown(f"""
         background-color: var(--bg-card) !important;
         color: var(--text-main) !important;
         border: 1px solid var(--border-color) !important;
-        border-radius: 8px !important;
+        border-radius: 10px !important;
         padding: 0.6rem 1rem !important;
     }}
     section[data-testid="stSidebar"] {{
@@ -132,13 +133,17 @@ st.markdown(f"""
     div[data-testid="metric-container"] {{
         background-color: var(--bg-card);
         border: 1px solid var(--border-color);
-        padding: 1.2rem;
-        border-radius: 10px;
+        padding: 1.4rem;
+        border-radius: 14px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.03);
     }}
     .stRadio label {{
-        padding: 10px;
-        border-radius: 8px;
+        padding: 12px;
+        border-radius: 10px;
         transition: background 0.2s;
+        background-color: var(--bg-card);
+        border: 1px solid var(--border-color);
+        margin-bottom: 6px;
     }}
     .stRadio label:hover {{
         background-color: var(--border-color);
@@ -169,7 +174,6 @@ if "gemini_modelo" not in st.session_state:
     st.session_state["gemini_modelo"] = "Auto-Seleccionar Modelo Activo"
 
 def obtener_modelos_activos_live(client):
-    """Consulta directamente a Google la lista de modelos activos en tiempo real."""
     modelos_encontrados = []
     try:
         lista_api = client.models.list()
@@ -181,7 +185,6 @@ def obtener_modelos_activos_live(client):
     except Exception:
         pass
     
-    # Respaldos de alta disponibilidad
     respaldos = ["gemini-2.5-flash", "gemini-3.1-pro-preview", "gemini-1.5-flash"]
     for r in respaldos:
         if r not in modelos_encontrados:
@@ -190,10 +193,6 @@ def obtener_modelos_activos_live(client):
     return modelos_encontrados
 
 def ejecutar_gemini_con_fallback(client, contents_payload, config, modelo_preferido):
-    """
-    SISTEMA DE CONEXIÓN ROBUSTO:
-    Maneja errores 404, 503 (Saturación), 429 (Cuota) y salta automáticamente de modelo.
-    """
     modelos_disponibles_live = obtener_modelos_activos_live(client)
     
     candidatos = []
@@ -220,7 +219,7 @@ def ejecutar_gemini_con_fallback(client, contents_payload, config, modelo_prefer
             err_str = str(e).lower()
             if any(k in err_str for k in errores_tolerados):
                 ultimo_error = e
-                time.sleep(0.5)  # Breve pausa pedagógica antes de saltar al siguiente modelo
+                time.sleep(0.5)
                 continue
             else:
                 raise e
@@ -228,7 +227,6 @@ def ejecutar_gemini_con_fallback(client, contents_payload, config, modelo_prefer
     raise ultimo_error
 
 def limpiar_radios_session():
-    """Limpia selecciones previas para evitar selecciones fantasma."""
     keys_a_borrar = [k for k in st.session_state.keys() if k.startswith("radio_alt_")]
     for k in keys_a_borrar:
         del st.session_state[k]
@@ -473,7 +471,6 @@ def procesar_documento_multimodal(file_path, api_key, modelo_preferido, file_ext
                 temperature=0.0
             )
 
-            # Auto-conexión dinámica con tolerancia a saturación (503)
             response, modelo_activo = ejecutar_gemini_con_fallback(
                 client=client,
                 contents_payload=[archivo_subido, prompt],
@@ -621,11 +618,11 @@ datos_usuario = usuarios_db.get(st.session_state.usuario_actual, {"nombre": "Pil
 
 # --- BARRA LATERAL ---
 with st.sidebar:
-    st.markdown(f"### 👨‍✈️ {datos_usuario['nombre']}")
+    st.markdown(f"### 👨‍‍✈️ {datos_usuario['nombre']}")
     st.caption("Piloto en Entrenamiento")
     st.divider()
     
-    texto_modo = "🌙 Activar Modo Lectura Nocturna (Filtro Cálido)" if not st.session_state.modo_oscuro else "☀️ Cambiar a Modo Claro"
+    texto_modo = "🌙 Activar Modo Sepia Nocturno" if not st.session_state.modo_oscuro else "☀️ Cambiar a Modo Claro"
     if st.button(texto_modo, use_container_width=True, type="secondary"):
         st.session_state.modo_oscuro = not st.session_state.modo_oscuro
         st.rerun()
@@ -853,7 +850,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
         resp_dict[idx_actual]["elegida"] = seleccion_radio if seleccion_radio != -1 else None
 
     if q_actual.get("correcta") is None:
-        st.warning("⚠️ Esta pregunta no tiene respuesta correcta detectada. Haz clic en el engranaje superior ⚙️️ para asignarla.")
+        st.warning("⚠️ Esta pregunta no tiene respuesta correcta detectada. Haz clic en el engranaje superior ⚙ para asignarla.")
 
     if corregido:
         idx_correcta = q_actual.get("correcta")
