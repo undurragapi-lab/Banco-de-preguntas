@@ -3,47 +3,53 @@ import cv2
 import google.generativeai as genai
 from PIL import Image
 import json
-import os
 import numpy as np
 
-# Configuración de la API usando los secretos de Streamlit
+# Configuración de API conectada a los secretos de Streamlit Cloud
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 
-st.set_page_config(page_title="Lector DGAC", layout="centered")
-st.title("✈️ Lector de Cuestionarios DGAC")
-st.write("Sube una foto de la página del examen para extraer el texto y detectar la alternativa marcada a lápiz.")
+# Configuración de la interfaz visual
+st.set_page_config(page_title="AeroStudio Pro", layout="centered", page_icon="✈️")
+
+st.title("✈️️ AeroStudio Pro")
+st.subheader("Lector OMR de Cuestionarios DGAC")
+st.write("Sube una página escaneada. El motor de visión optimizará el contraste del grafito y extraerá la alternativa marcada en formato estructurado.")
 
 def procesar_imagen_memoria(imagen_bytes):
     """
-    Convierte el archivo web subido a una imagen de OpenCV y mejora el contraste.
+    Decodifica la imagen subida a la web directamente en memoria RAM,
+    aplica el filtro de alto contraste para grafito y la convierte a formato PIL.
     """
-    # Convertir bytes a formato legible por OpenCV
+    # Convertir bytes a un arreglo de numpy
     nparr = np.frombuffer(imagen_bytes, np.uint8)
+    
+    # Decodificar imagen a formato OpenCV (BGR)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
-    # Convertir a escala de grises y aplicar contraste (CLAHE)
+    # Convertir a escala de grises
     gris = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # Aplicar CLAHE (Contrast Limited Adaptive Histogram Equalization)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     imagen_mejorada = clahe.apply(gris)
 
-    # Guardar temporalmente para pasarla a Gemini
-    ruta_temp = "temp_optimizada.jpg"
-    cv2.imwrite(ruta_temp, imagen_mejorada)
-    return ruta_temp
+    # Convertir de vuelta a espacio de color RGB para compatibilidad con PIL/Gemini
+    img_rgb = cv2.cvtColor(imagen_mejorada, cv2.COLOR_GRAY2RGB)
+    
+    # Retornar objeto de imagen nativo, sin guardar archivos temporales
+    return Image.fromarray(img_rgb)
 
-def extraer_cuestionario(ruta_imagen):
+def extraer_cuestionario(imagen_pil):
     """
-    Analiza la imagen procesada usando el modelo multimodal.
+    Inyecta la imagen procesada al modelo multimodal y fuerza una salida JSON estricta.
     """
-    imagen_pil = Image.open(ruta_imagen)
     modelo = genai.GenerativeModel('gemini-1.5-pro')
 
     prompt = """
-    Eres un sistema experto en OMR (Optical Mark Recognition) y OCR.
-    Analiza la imagen adjunta, que es una página de un examen de aviación de la DGAC.
-    Las respuestas correctas han sido marcadas a mano con lápiz (pueden ser cruces, círculos, rayas o marcas de verificación sobre o junto a la letra).
+    Eres un sistema experto en OMR (Optical Mark Recognition) y OCR diseñado para procesar exámenes de aviación.
+    Analiza la imagen adjunta. Las respuestas correctas han sido marcadas a mano con lápiz grafito (cruces, círculos, rayas o marcas de verificación sobre o junto a la letra).
     
-    Tu tarea es extraer el texto exacto y detectar la marca física.
+    Extrae el texto exacto y detecta la marca física.
     Devuelve ÚNICAMENTE un arreglo JSON válido con la siguiente estructura, sin texto adicional ni formato markdown:
     [
       {
@@ -59,35 +65,35 @@ def extraer_cuestionario(ruta_imagen):
     ]
     Si no hay marca en una pregunta, asigna null a "respuesta_marcada".
     """
+    
     configuracion = genai.GenerationConfig(response_mime_type="application/json")
     respuesta = modelo.generate_content([prompt, imagen_pil], generation_config=configuracion)
     
-    # Limpieza del archivo temporal
-    if os.path.exists(ruta_imagen):
-        os.remove(ruta_imagen)
-
     return json.loads(respuesta.text)
 
-# Interfaz de usuario para cargar archivos
+# Zona de carga de archivos en la interfaz
 archivo_subido = st.file_uploader("Adjunta tu imagen (JPG, PNG)", type=["jpg", "jpeg", "png"])
 
 if archivo_subido is not None:
-    # Mostrar vista previa de la imagen cargada
-    st.image(archivo_subido, caption="Vista previa del documento", use_column_width=True)
+    # Capturar la imagen subida en bytes
+    bytes_data = archivo_subido.getvalue()
     
-    if st.button("Analizar Respuestas", type="primary"):
-        with st.spinner("Procesando contraste y leyendo documento..."):
+    # Mostrar vista previa en la plataforma
+    st.image(bytes_data, caption="Documento Original", use_column_width=True)
+    
+    # Botón de ejecución
+    if st.button("Analizar Respuestas", type="primary", use_container_width=True):
+        with st.spinner("Optimizando trazos de lápiz y ejecutando análisis estructural..."):
             try:
-                # Leer los bytes del archivo cargado en la web
-                bytes_data = archivo_subido.getvalue()
+                # 1. Aumentar contraste del grafito en memoria
+                imagen_procesada_pil = procesar_imagen_memoria(bytes_data)
                 
-                # Ejecutar el flujo de procesamiento
-                ruta_procesada = procesar_imagen_memoria(bytes_data)
-                datos_json = extraer_cuestionario(ruta_procesada)
+                # 2. Extraer datos con IA
+                datos_json = extraer_cuestionario(imagen_procesada_pil)
                 
-                # Mostrar resultados
-                st.success("¡Extracción exitosa!")
+                # 3. Desplegar resultados
+                st.success("¡Lectura de marcas exitosa!")
                 st.json(datos_json)
                 
             except Exception as e:
-                st.error(f"Ocurrió un error: {e}")
+                st.error(f"Ocurrió un error en el procesamiento: {e}")
