@@ -110,16 +110,36 @@ st.markdown(f"""
         color: var(--text-main) !important;
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
     }}
+    
+    /* ENCABEZADO Y BOTÓN DE DESPLIEGUE/OCULTAR BARRA VISIBLE EN TODO MOMENTO */
     header[data-testid="stHeader"] {{
         background-color: transparent !important;
-        z-index: 99999;
+        z-index: 999999 !important;
+        visibility: visible !important;
+        display: flex !important;
     }}
-    button[data-testid="stSidebarCollapseButton"], button[data-testid="baseButton-header"] {{
+    [data-testid="collapsedControl"],
+    [data-testid="stSidebarCollapseButton"],
+    button[data-testid="baseButton-header"],
+    [data-testid="stHeader"] button {{
+        visibility: visible !important;
+        opacity: 1 !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
         color: var(--text-main) !important;
         background-color: var(--bg-card) !important;
         border: 1px solid var(--border-color) !important;
         border-radius: 8px !important;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.2) !important;
+        z-index: 1000000 !important;
     }}
+    [data-testid="collapsedControl"]:hover,
+    [data-testid="stSidebarCollapseButton"]:hover {{
+        border-color: var(--accent-gold) !important;
+        color: var(--accent-gold) !important;
+    }}
+
     div.stButton > button {{
         background: linear-gradient(135deg, var(--accent-blue) 0%, var(--accent-hover) 100%) !important;
         color: white !important;
@@ -785,7 +805,7 @@ with st.sidebar:
     estado_genai = f"`{st.session_state['gemini_modelo']}`" if GENAI_DISPONIBLE else "`GenAI Pendiente`"
     st.info(f"🟢 **Estado Conexión:** {estado_genai}")
 
-    st.write("")
+    st.divider()
     if st.button("🚪 Cerrar Sesión", type="secondary", use_container_width=True):
         st.session_state.usuario_actual = None
         eliminar_sesion_persistida()
@@ -1119,7 +1139,7 @@ else:
                         if not GENAI_DISPONIBLE:
                             st.error("⚠️ La librería `google-genai` no está instalada en el servidor.")
                         elif not st.session_state["gemini_api_key"]:
-                            st.error("⚠️️ Para usar el análisis con IA debes configurar tu API Key de Gemini.")
+                            st.error("⚠ Para usar el análisis con IA debes configurar tu API Key de Gemini.")
                         else:
                             preguntas_extraidas = procesar_documento_multimodal(
                                 tmp_path,
@@ -1155,4 +1175,62 @@ else:
         banco_data = cargar_banco(b_id)
         if not banco_data: continue
 
-        todas_preguntas = list
+        todas_preguntas = list(banco_data.get("preguntas", []))
+        usuario_actual = st.session_state.usuario_actual or "default"
+        indices_falladas = banco_data.get("falladas", {}).get(usuario_actual, [])
+        num_falladas = len(indices_falladas)
+        num_sin_respuesta = sum(1 for q in todas_preguntas if q.get("correcta") is None)
+
+        with st.container():
+            col1, col2, col3, col4 = st.columns([3, 1.3, 2, 0.5])
+            with col1:
+                st.markdown(f"#### **{banco_data.get('nombre', b_id)}**")
+                st.caption(f"Total: {len(todas_preguntas)} preguntas | 🔴 Falladas pendientes: {num_falladas}")
+                st.caption(f"Preguntas sin alternativa correcta: {num_sin_respuesta}")
+            with col2:
+                st.write("")
+                modo_aleatorio = st.checkbox("🔀 Orden Aleatorio", key=f"rnd_{b_id}")
+            with col3:
+                st.write("")
+                col_btn_a, col_btn_b = st.columns(2)
+                with col_btn_a:
+                    if st.button("🚀 Iniciar", key=f"start_{b_id}", type="primary", use_container_width=True):
+                        limpiar_radios_session()
+                        preg = list(todas_preguntas)
+                        if modo_aleatorio:
+                            random.shuffle(preg)
+                        if preg:
+                            st.session_state.modo_estudio_data = {
+                                "preguntas": preg,
+                                "idx_actual": 0,
+                                "b_id": b_id,
+                                "nombre_prueba": banco_data.get('nombre', b_id),
+                                "respuestas_usuario": {}
+                            }
+                            st.session_state.vista = "estudio"
+                            st.rerun()
+                with col_btn_b:
+                    btn_repaso_disabled = (num_falladas == 0)
+                    if st.button("🔴 Repaso", key=f"repaso_{b_id}", type="secondary", disabled=btn_repaso_disabled, help="Estudia solo tus preguntas falladas", use_container_width=True):
+                        limpiar_radios_session()
+                        preg_repaso = [q for q in todas_preguntas if q.get("idx_original") in indices_falladas]
+                        if modo_aleatorio:
+                            random.shuffle(preg_repaso)
+                        if preg_repaso:
+                            st.session_state.modo_estudio_data = {
+                                "preguntas": preg_repaso,
+                                "idx_actual": 0,
+                                "b_id": b_id,
+                                "nombre_prueba": f"{banco_data.get('nombre', b_id)} (Modo Refuerzo)",
+                                "respuestas_usuario": {}
+                            }
+                            st.session_state.vista = "estudio"
+                            st.rerun()
+            with col4:
+                st.write("")
+                if st.button("🗑️", key=f"del_{b_id}", type="secondary", help="Eliminar este banco"):
+                    if eliminar_banco(b_id):
+                        st.toast(f"Banco '{banco_data.get('nombre', b_id)}' eliminado.")
+                        time.sleep(0.4)
+                        st.rerun()
+        st.divider()
