@@ -8,23 +8,8 @@ import base64
 from datetime import datetime
 import streamlit as st
 import pandas as pd
-
-# --- IMPORTACIÓN ROBUSTA Y CAPA DE COMPATIBILIDAD (EVITA CAÍDAS POR ACTUALIZACIONES) ---
-SDK_MODE = None
-genai = None
-types = None
-genai_legacy = None
-
-try:
-    from google import genai
-    from google.genai import types
-    SDK_MODE = "nuevo"
-except ImportError:
-    try:
-        import google.generativeai as genai_legacy
-        SDK_MODE = "legado"
-    except ImportError:
-        SDK_MODE = "ninguno"
+from google import genai
+from google.genai import types
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
@@ -182,31 +167,15 @@ if "gemini_api_key" not in st.session_state:
 if "gemini_modelo" not in st.session_state:
     st.session_state["gemini_modelo"] = "Auto-Seleccionar Modelo Activo"
 
-def obtener_cliente_genai(api_key):
-    if SDK_MODE == "nuevo":
-        return genai.Client(api_key=api_key.strip())
-    elif SDK_MODE == "legado":
-        genai_legacy.configure(api_key=api_key.strip())
-        return genai_legacy
-    else:
-        raise ImportError("No se encontró ninguna librería de Google GenAI instalada en el entorno.")
-
 def obtener_modelos_activos_live(client):
     modelos_encontrados = []
     try:
-        if SDK_MODE == "nuevo":
-            lista_api = client.models.list()
-            for m in lista_api:
-                nombre = getattr(m, 'name', '') or str(m)
-                nombre_limpio = nombre.replace("models/", "")
-                if "gemini" in nombre_limpio.lower() and not any(x in nombre_limpio.lower() for x in ["embedding", "imagen", "tts", "stt", "bison"]):
-                    modelos_encontrados.append(nombre_limpio)
-        elif SDK_MODE == "legado":
-            for m in client.list_models():
-                if 'generateContent' in m.supported_generation_methods:
-                    nombre_limpio = m.name.replace("models/", "")
-                    if "gemini" in nombre_limpio.lower():
-                        modelos_encontrados.append(nombre_limpio)
+        lista_api = client.models.list()
+        for m in lista_api:
+            nombre = getattr(m, 'name', '') or str(m)
+            nombre_limpio = nombre.replace("models/", "")
+            if "gemini" in nombre_limpio.lower() and not any(x in nombre_limpio.lower() for x in ["embedding", "imagen", "tts", "stt", "bison"]):
+                modelos_encontrados.append(nombre_limpio)
     except Exception:
         pass
     
@@ -233,23 +202,11 @@ def ejecutar_gemini_con_fallback(client, contents_payload, config, modelo_prefer
 
     for modelo in candidatos:
         try:
-            if SDK_MODE == "nuevo":
-                response = client.models.generate_content(
-                    model=modelo,
-                    contents=contents_payload,
-                    config=config
-                )
-            else:
-                # Modo legado
-                generation_config = {}
-                if config and hasattr(config, 'response_mime_type'):
-                    generation_config['response_mime_type'] = config.response_mime_type
-                if config and hasattr(config, 'temperature'):
-                    generation_config['temperature'] = config.temperature
-                
-                model_inst = client.GenerativeModel(modelo, generation_config=generation_config if generation_config else None)
-                response = model_inst.generate_content(contents_payload)
-            
+            response = client.models.generate_content(
+                model=modelo,
+                contents=contents_payload,
+                config=config
+            )
             st.session_state["gemini_modelo"] = modelo
             return response, modelo
         except Exception as e:
@@ -435,7 +392,7 @@ def obtener_historial_reciente():
     filtrado = [h for h in historial if h.get("timestamp", 0) >= limite_tiempo and h.get("usuario") == st.session_state.usuario_actual]
     return sorted(filtrado, key=lambda x: x["timestamp"], reverse=True)
 
-# --- PROCESAMIENTO MULTIMODAL Y AUTO-CONEXIÓN ---
+# --- PROCESAMIENTO CON GOOGLE FILE API, VISIÓN Y AUTO-CONEXIÓN ---
 def limpiar_respuesta_json(texto_raw):
     texto_limpio = re.sub(r"^```json\s*", "", texto_raw.strip(), flags=re.MULTILINE)
     texto_limpio = re.sub(r"^```\s*", "", texto_limpio, flags=re.MULTILINE)
@@ -450,7 +407,7 @@ def procesar_documento_multimodal(file_path, api_key, modelo_preferido, file_ext
             st.error("⚠️ Ingrese una API Key válida antes de procesar.")
             return None
 
-        client = obtener_cliente_genai(api_key)
+        client = genai.Client(api_key=api_key.strip())
 
         ext = file_extension.lower().replace(".", "")
         mime_type = "application/pdf"
@@ -460,13 +417,10 @@ def procesar_documento_multimodal(file_path, api_key, modelo_preferido, file_ext
             mime_type = "image/jpeg"
 
         with st.spinner(f"📤 Subiendo archivo ({ext.upper()}) a Google File API..."):
-            if SDK_MODE == "nuevo":
-                archivo_subido = client.files.upload(
-                    file=file_path,
-                    config={"mime_type": mime_type}
-                )
-            else:
-                archivo_subido = client.upload_file(file_path, mime_type=mime_type)
+            archivo_subido = client.files.upload(
+                file=file_path,
+                config={"mime_type": mime_type}
+            )
 
         with st.spinner("👁 Conectando dinámicamente con Gemini y analizando documento..."):
             prompt = """
@@ -506,26 +460,21 @@ def procesar_documento_multimodal(file_path, api_key, modelo_preferido, file_ext
             En "respuesta_correcta" indica únicamente la letra ("A", "B", "C" o "D").
             """
 
-            config = None
-            if SDK_MODE == "nuevo":
-                config = types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.0
-                )
-            
-            payload = [archivo_subido, prompt] if SDK_MODE == "nuevo" else [archivo_subido, prompt]
+            config = types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.0
+            )
 
             response, modelo_activo = ejecutar_gemini_con_fallback(
                 client=client,
-                contents_payload=payload,
+                contents_payload=[archivo_subido, prompt],
                 config=config,
                 modelo_preferido=modelo_preferido
             )
 
         preguntas_finales = []
-        texto_resp = response.text if hasattr(response, 'text') else str(response)
-        if texto_resp:
-            json_limpio = limpiar_respuesta_json(texto_resp)
+        if response and response.text:
+            json_limpio = limpiar_respuesta_json(response.text)
             data = json.loads(json_limpio)
             
             if "preguntas" in data:
@@ -572,17 +521,14 @@ def procesar_documento_multimodal(file_path, api_key, modelo_preferido, file_ext
     finally:
         if client and archivo_subido:
             try:
-                if SDK_MODE == "nuevo":
-                    client.files.delete(name=archivo_subido.name)
-                else:
-                    client.delete_file(archivo_subido.name)
+                client.files.delete(name=archivo_subido.name)
             except Exception:
                 pass
 
-# --- EXPLICACIÓN TÉCNICA PEDAGÓGICA (IA) ---
+# --- EXPLICACIÓN TÉCNICA PEDAGÓGICA (IA) CON CONEXIÓN DINÁMICA ---
 def obtener_explicacion_ia(pregunta_text, alternativas, idx_correcta, idx_elegida, api_key, modelo_preferido):
     try:
-        client = obtener_cliente_genai(api_key)
+        client = genai.Client(api_key=api_key.strip())
         
         alt_corr_text = "N/A"
         if idx_correcta is not None and isinstance(idx_correcta, int) and 0 <= idx_correcta < len(alternativas):
@@ -606,10 +552,7 @@ def obtener_explicacion_ia(pregunta_text, alternativas, idx_correcta, idx_elegid
         3. Da un consejo rápido para recordar este concepto en el examen.
         """
         
-        config = None
-        if SDK_MODE == "nuevo":
-            config = types.GenerateContentConfig(temperature=0.3)
-        
+        config = types.GenerateContentConfig(temperature=0.3)
         response, _ = ejecutar_gemini_con_fallback(
             client=client,
             contents_payload=[prompt],
@@ -617,7 +560,7 @@ def obtener_explicacion_ia(pregunta_text, alternativas, idx_correcta, idx_elegid
             modelo_preferido=modelo_preferido
         )
         
-        return response.text if hasattr(response, 'text') else str(response) if response else "No se pudo generar la explicación en este momento."
+        return response.text if response else "No se pudo generar la explicación en este momento."
     except Exception as e:
         return f"Error al consultar el instructor de IA: {e}"
 
@@ -1013,7 +956,7 @@ else:
                     
                     if usar_ia_pauta:
                         if not st.session_state["gemini_api_key"]:
-                            st.error("⚠ Para usar el análisis con IA debes configurar tu API Key de Gemini.")
+                            st.error("⚠️️ Para usar el análisis con IA debes configurar tu API Key de Gemini.")
                         else:
                             preguntas_extraidas = procesar_documento_multimodal(
                                 tmp_path, 
@@ -1053,6 +996,7 @@ else:
         indices_falladas = banco_data.get("falladas", {}).get(usuario_actual, [])
         num_falladas = len(indices_falladas)
         
+        # Conteo de preguntas sin alternativa correcta asignada
         num_sin_respuesta = sum(1 for q in todas_preguntas if q.get("correcta") is None)
 
         with st.container():
