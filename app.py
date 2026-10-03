@@ -8,23 +8,8 @@ import base64
 from datetime import datetime
 import streamlit as st
 import pandas as pd
-# --- IMPORTACIÓN ROBUSTA Y CAPA DE COMPATIBILIDAD (EVITA CAÍDAS POR ACTUALIZACIONES) ---
-SDK_MODE = None
-genai = None
-types = None
-genai_legacy = None
-
-try:
-    from google import genai
-    from google.genai import types
-    SDK_MODE = "nuevo"
-except ImportError:
-    try:
-        import google.generativeai as genai_legacy
-        SDK_MODE = "legado"
-    except ImportError:
-        SDK_MODE = "ninguno"
-
+from google import genai
+from google.genai import types
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
@@ -33,22 +18,7 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-import json
 
-# Estructura inicial de usuarios permitidos
-datos = {
-    "usuarios": [
-        {
-            "correo": "pablo@aerudio.local",
-            "contrasena": "123456"
-        }
-    ]
-}
-
-with open("usuarios.json", "w", encoding="utf-8") as f:
-    json.dump(datos, f, indent=4, ensure_ascii=False)
-
-print("¡Archivo usuarios.json generado correctamente con un usuario de prueba!")
 # --- CONFIGURACIÓN PWA INLINE (COMPATIBILIDAD CON CHROME MOBILE) ---
 manifest_dict = {
     "name": "AeroStudio Pro",
