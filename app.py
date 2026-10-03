@@ -8,8 +8,18 @@ import base64
 from datetime import datetime
 import streamlit as st
 import pandas as pd
-from google import genai
-from google.genai import types
+
+# --- IMPORTACIÓN BLINDADA DE GEMINI (EVITA COLAPSOS CRÍTICOS) ---
+GENAI_DISPONIBLE = False
+genai = None
+types = None
+
+try:
+    from google import genai
+    from google.genai import types
+    GENAI_DISPONIBLE = True
+except ImportError:
+    GENAI_DISPONIBLE = False
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
@@ -169,6 +179,9 @@ if "gemini_modelo" not in st.session_state:
 
 def obtener_modelos_activos_live(client):
     modelos_encontrados = []
+    if not GENAI_DISPONIBLE or client is None:
+        return ["gemini-2.5-flash", "gemini-3.1-pro-preview", "gemini-1.5-flash"]
+        
     try:
         lista_api = client.models.list()
         for m in lista_api:
@@ -187,6 +200,9 @@ def obtener_modelos_activos_live(client):
     return modelos_encontrados
 
 def ejecutar_gemini_con_fallback(client, contents_payload, config, modelo_preferido):
+    if not GENAI_DISPONIBLE or client is None:
+        raise ImportError("La librería google-genai no está disponible en el servidor.")
+
     modelos_disponibles_live = obtener_modelos_activos_live(client)
     
     candidatos = []
@@ -400,6 +416,10 @@ def limpiar_respuesta_json(texto_raw):
     return texto_limpio.strip()
 
 def procesar_documento_multimodal(file_path, api_key, modelo_preferido, file_extension):
+    if not GENAI_DISPONIBLE:
+        st.error("⚠️ La librería `google-genai` no está instalada en el servidor. Asegúrate de incluir `google-genai` en el archivo `requirements.txt`.")
+        return None
+
     archivo_subido = None
     client = None
     try:
@@ -527,6 +547,9 @@ def procesar_documento_multimodal(file_path, api_key, modelo_preferido, file_ext
 
 # --- EXPLICACIÓN TÉCNICA PEDAGÓGICA (IA) CON CONEXIÓN DINÁMICA ---
 def obtener_explicacion_ia(pregunta_text, alternativas, idx_correcta, idx_elegida, api_key, modelo_preferido):
+    if not GENAI_DISPONIBLE:
+        return "⚠️ La librería `google-genai` no está disponible. Asegúrate de incluirla en tu archivo `requirements.txt`."
+
     try:
         client = genai.Client(api_key=api_key.strip())
         
@@ -624,6 +647,9 @@ with st.sidebar:
     st.divider()
     st.markdown("### ⚙️ Configuración de IA")
     
+    if not GENAI_DISPONIBLE:
+        st.warning("⚠️ Módulo `google-genai` no detectado. Revisa tu archivo `requirements.txt` en GitHub.")
+    
     if not st.session_state["gemini_api_key"]:
         user_input_key = st.text_input("Google Gemini API Key", type="password", help="Ingresa tu clave de AI Studio")
         if user_input_key:
@@ -643,7 +669,8 @@ with st.sidebar:
         st.rerun()
         
     st.divider()
-    st.info(f"🟢 **Estado Conexión:** `{st.session_state['gemini_modelo']}`")
+    estado_genai = f"`{st.session_state['gemini_modelo']}`" if GENAI_DISPONIBLE else "`Librería GenAI Pendiente`"
+    st.info(f"🟢 **Estado Conexión:** {estado_genai}")
     st.write("")
     if st.button("🚪 Cerrar Sesión", type="secondary", use_container_width=True):
         st.session_state.usuario_actual = None
@@ -955,8 +982,10 @@ else:
                     preguntas_extraidas = []
                     
                     if usar_ia_pauta:
-                        if not st.session_state["gemini_api_key"]:
-                            st.error("⚠️️ Para usar el análisis con IA debes configurar tu API Key de Gemini.")
+                        if not GENAI_DISPONIBLE:
+                            st.error("⚠ La librería `google-genai` no está instalada en el servidor. Agrégala a `requirements.txt`.")
+                        elif not st.session_state["gemini_api_key"]:
+                            st.error("⚠ Para usar el análisis con IA debes configurar tu API Key de Gemini.")
                         else:
                             preguntas_extraidas = procesar_documento_multimodal(
                                 tmp_path, 
@@ -996,7 +1025,6 @@ else:
         indices_falladas = banco_data.get("falladas", {}).get(usuario_actual, [])
         num_falladas = len(indices_falladas)
         
-        # Conteo de preguntas sin alternativa correcta asignada
         num_sin_respuesta = sum(1 for q in todas_preguntas if q.get("correcta") is None)
 
         with st.container():
