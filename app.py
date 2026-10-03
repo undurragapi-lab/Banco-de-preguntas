@@ -8,8 +8,23 @@ import base64
 from datetime import datetime
 import streamlit as st
 import pandas as pd
-from google import genai
-from google.genai import types
+# --- IMPORTACIÓN ROBUSTA Y CAPA DE COMPATIBILIDAD (EVITA CAÍDAS POR ACTUALIZACIONES) ---
+SDK_MODE = None
+genai = None
+types = None
+genai_legacy = None
+
+try:
+    from google import genai
+    from google.genai import types
+    SDK_MODE = "nuevo"
+except ImportError:
+    try:
+        import google.generativeai as genai_legacy
+        SDK_MODE = "legado"
+    except ImportError:
+        SDK_MODE = "ninguno"
+
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
