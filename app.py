@@ -36,8 +36,8 @@ manifest_dict = {
     "short_name": "AeroStudio",
     "start_url": "/",
     "display": "standalone",
-    "background_color": "#171514",
-    "theme_color": "#d97706",
+    "background_color": "#14151a",
+    "theme_color": "#dfb351",
     "icons": [
         {
             "src": "https://img.icons8.com/color/512/airplane-take-off.png",
@@ -61,27 +61,33 @@ if "modo_estudio_data" not in st.session_state:
 # --- CSS: MODO CLARO, MODO LECTURA NOCTURNA Y CONTROL DE BARRA LATERAL ---
 css_light = """
     :root {
-        --bg-main: #f8fafc;
+        --bg-main: #f4f5f7;
         --bg-card: #ffffff;
-        --accent-blue: #0284c7;
-        --accent-hover: #0369a1;
-        --text-main: #0f172a;
+        --accent-primary: #e2e8f0;
+        --accent-hover: #cbd5e1;
+        --accent-border: #cbd5e1;
+        --text-main: #1e293b;
         --text-muted: #64748b;
         --border-color: #e2e8f0;
-        --sidebar-bg: #f1f5f9;
+        --sidebar-bg: #ffffff;
+        --btn-text: #0f172a;
+        --title-color: #0f172a;
     }
 """
 
 css_dark = """
     :root {
-        --bg-main: #171514;
-        --bg-card: #23201e;
-        --accent-blue: #d97706;
-        --accent-hover: #b45309;
-        --text-main: #f5efe6;
-        --text-muted: #a8a29e;
-        --border-color: #3f3835;
-        --sidebar-bg: #1c1917;
+        --bg-main: #171821;
+        --bg-card: #21222d;
+        --accent-primary: linear-gradient(135deg, #e0b354 0%, #c29538 100%);
+        --accent-hover: linear-gradient(135deg, #f0c56c 0%, #d4a74a 100%);
+        --accent-border: #c29538;
+        --text-main: #e2e8f0;
+        --text-muted: #94a3b8;
+        --border-color: #313342;
+        --sidebar-bg: #111217;
+        --btn-text: #000000;
+        --title-color: #e0b354;
     }
 """
 
@@ -89,7 +95,7 @@ css_activo = css_dark if st.session_state.modo_oscuro else css_light
 
 st.markdown(f"""
 <link rel="manifest" href="{manifest_data_uri}">
-<meta name="theme-color" content="#d97706">
+<meta name="theme-color" content="#dfb351">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <style>
@@ -98,6 +104,9 @@ st.markdown(f"""
         background-color: var(--bg-main);
         color: var(--text-main);
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }}
+    h1, h2, h3, h4, h5, h6, .markdown-text-container h1, .markdown-text-container h2, .markdown-text-container h3 {{
+        color: var(--title-color) !important;
     }}
     header[data-testid="stHeader"] {{
         background-color: transparent !important;
@@ -110,23 +119,28 @@ st.markdown(f"""
         border-radius: 8px !important;
     }}
     div.stButton > button {{
-        background: linear-gradient(135deg, var(--accent-blue) 0%, var(--accent-hover) 100%);
-        color: white;
-        border: none;
-        border-radius: 8px;
-        padding: 0.6rem 1.2rem;
-        font-weight: 600;
-        box-shadow: 0 4px 12px rgba(217, 119, 6, 0.15);
-        transition: all 0.2s ease-in-out;
+        background: var(--accent-primary) !important;
+        color: var(--btn-text) !important;
+        border: 1px solid var(--accent-border) !important;
+        border-radius: 8px !important;
+        padding: 0.6rem 1.2rem !important;
+        font-weight: 600 !important;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        transition: all 0.2s ease-in-out !important;
     }}
     div.stButton > button:hover {{
+        background: var(--accent-hover) !important;
         transform: translateY(-2px);
     }}
     div.stButton > button[kind="secondary"] {{
-        background: var(--bg-card);
-        border: 1px solid var(--border-color);
-        color: var(--text-main);
-        box-shadow: none;
+        background: var(--bg-card) !important;
+        border: 1px solid var(--border-color) !important;
+        color: var(--text-main) !important;
+        box-shadow: none !important;
+    }}
+    div.stButton > button[kind="secondary"]:hover {{
+        border: 1px solid var(--title-color) !important;
+        color: var(--title-color) !important;
     }}
     .stTextInput input, .stSelectbox select, .stPasswordInput input {{
         background-color: var(--bg-card) !important;
@@ -152,6 +166,15 @@ st.markdown(f"""
     }}
     .stRadio label:hover {{
         background-color: var(--border-color);
+    }}
+    /* Estilo del modal popover de Streamlit */
+    div[data-testid="stPopoverBody"] {{
+        background-color: var(--bg-card) !important;
+        border: 1px solid var(--border-color) !important;
+        color: var(--text-main) !important;
+    }}
+    b, strong {{
+        color: var(--title-color);
     }}
 </style>
 """, unsafe_allow_html=True)
@@ -257,10 +280,7 @@ def guardar_usuarios(usuarios):
         json.dump(usuarios, f, ensure_ascii=False, indent=4)
 
 def inicializar_usuarios():
-    """Inicializa la base de datos en session_state y en archivo, registrando el usuario administrador por defecto."""
     usuarios = cargar_usuarios()
-    
-    # OPCIÓN 2: Garantizar usuario Dev / Administrador
     if "undurragapi@gmail.com" not in usuarios:
         usuarios["undurragapi@gmail.com"] = {
             "nombre": "Pablo Undurraga",
@@ -269,31 +289,24 @@ def inicializar_usuarios():
             "rol": "admin"
         }
         guardar_usuarios(usuarios)
-    
     st.session_state.usuarios_db = usuarios
     return usuarios
 
 def autenticar_usuario(email_input, password_input):
-    """OPCIÓN 1: Sanea espacios/mayúsculas y valida credenciales (soporta texto plano y hash)."""
     usuarios_db = inicializar_usuarios()
-    
     if not email_input or not password_input:
         return False, "Por favor ingresa tu correo y contraseña."
 
     email_clean = email_input.strip().lower()
     pass_clean = password_input.strip()
     
-    # 1. Validar existencia del correo
     if email_clean not in usuarios_db:
         return False, "Correo o contraseña incorrectos."
     
     usuario = usuarios_db[email_clean]
     pass_guardada = str(usuario.get("password", ""))
-    
-    # Generar Hash SHA-256 por compatibilidad
     pass_hash_input = hashlib.sha256(pass_clean.encode()).hexdigest()
     
-    # 2. Validar contraseña (soporta texto plano y hash)
     if pass_clean == pass_guardada or pass_hash_input == pass_guardada:
         return True, f"¡Bienvenido, {usuario.get('nombre', 'Usuario')}!"
     
@@ -330,7 +343,6 @@ if "usuario_actual" not in st.session_state:
 # --- BANCOS DE PREGUNTAS ---
 def guardar_banco(nombre_id, data):
     ruta = os.path.join(DATA_DIR, f"{nombre_id}.json")
-    
     for idx, q in enumerate(data.get("preguntas", [])):
         if "idx_original" not in q:
             q["idx_original"] = idx
@@ -473,7 +485,6 @@ def procesar_documento_multimodal(file_path, api_key, modelo_preferido, file_ext
             return None
 
         client = genai.Client(api_key=api_key.strip())
-
         ext = file_extension.lower().replace(".", "")
         mime_type = "application/pdf"
         if ext == "png":
@@ -501,14 +512,7 @@ def procesar_documento_multimodal(file_path, api_key, modelo_preferido, file_ext
                - Marcas de editor de PDF (resaltados amarillos/verdes, círculos rojos, texto en color/negrita).
                - Pautas impresas en el documento original.
             4. Registra en 'respuesta_correcta' exactamente la alternativa marcada visualmente en el documento, sin corregir errores del texto original.
-            5. CLASIFICA LA MATERIA en 'categoria': Asigna una categoría aeronáutica oficial a cada pregunta, por ejemplo:
-               - "Reglamentación y Normativa"
-               - "Meteorología Aeronáutica"
-               - "Navegación y Planificación"
-               - "Fisiología y Factores Humanos"
-               - "Aerodinámica y Performance"
-               - "Sistemas y Motores"
-               - "Procedimientos Operativos"
+            5. CLASIFICA LA MATERIA en 'categoria': Asigna una categoría aeronáutica oficial a cada pregunta.
 
             FORMATO DE SALIDA ESTRICTO (JSON):
             Devuelve ÚNICAMENTE un objeto JSON válido con la siguiente estructura exacta:
@@ -634,7 +638,7 @@ def obtener_explicacion_ia(pregunta_text, alternativas, idx_correcta, idx_elegid
 
 # --- CONTROL DE ACCESO ---
 if st.session_state.usuario_actual is None:
-    st.markdown("<h2 style='text-align: center; color: var(--accent-blue); padding-top: 5vh;'>✈️ AeroStudio Pro</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center; color: var(--title-color); padding-top: 5vh;'>✈️ AeroStudio Pro</h2>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: var(--text-muted); margin-bottom: 2rem;'>Plataforma avanzada de estudio y entrenamiento aeronáutico con IA integrada.</p>", unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -702,7 +706,7 @@ with st.sidebar:
     st.caption("Piloto en Entrenamiento")
     st.divider()
     
-    texto_modo = "🌙 Activar Modo Lectura Nocturna (Filtro Cálido)" if not st.session_state.modo_oscuro else "☀️ Cambiar a Modo Claro"
+    texto_modo = "🌙 Cambiar a Modo Nocturno" if not st.session_state.modo_oscuro else "☀️ Cambiar a Modo Claro"
     if st.button(texto_modo, use_container_width=True, type="secondary"):
         st.session_state.modo_oscuro = not st.session_state.modo_oscuro
         st.rerun()
@@ -720,14 +724,14 @@ with st.sidebar:
             st.success("¡API Key guardada!")
 
     st.divider()
-    if st.button("👤 Perfil de Usuario", use_container_width=True):
+    if st.button("👤 Perfil de Usuario", use_container_width=True, type="secondary"):
         st.session_state.vista = "perfil"
         st.rerun()
-    if st.button("🏠 Panel Principal", use_container_width=True):
+    if st.button("🏠 Panel Principal", use_container_width=True, type="secondary"):
         st.session_state.vista = "home"
         st.session_state.modo_estudio_data = None
         st.rerun()
-    if st.button("📊 Historial y Diagnóstico", use_container_width=True):
+    if st.button("📊 Historial y Diagnóstico", use_container_width=True, type="secondary"):
         st.session_state.vista = "historial"
         st.rerun()
         
@@ -839,7 +843,7 @@ elif st.session_state.vista == "historial":
                 col2.markdown(f"📅 {h['fecha']}")
                 col3.markdown(f"🎯 **Puntaje:** {h['puntaje']}% `({h['correctas']}/{h['total']})`")
                 st.divider()
-    if st.button("⬅️ Regresar al Inicio"):
+    if st.button("⬅️ Regresar al Inicio", type="secondary"):
         st.session_state.vista = "home"
         st.rerun()
 
@@ -887,7 +891,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
                 key=f"pop_corr_{idx_actual}"
             )
             
-            if st.button("Guardar Corrección", key=f"btn_pop_save_{idx_actual}", use_container_width=True):
+            if st.button("Guardar Corrección", key=f"btn_pop_save_{idx_actual}", use_container_width=True, type="primary"):
                 q_actual_pop["correcta"] = nueva_corr_sel
                 idx_orig = q_actual_pop.get("idx_original", idx_actual)
                 if b_id_actual:
@@ -902,7 +906,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
                 estado_q = resp_dict.get(i, {}).get("estado")
                 label_btn = f"🔵 {i+1}" if i == idx_actual else (f"🟢 {i+1}" if estado_q == "correcta" else (f"🔴 {i+1}" if estado_q == "incorrecta" else (f"⚪ {i+1}" if estado_q == "omitida" else f"⚫ {i+1}")))
                 with cols_grid[i % 5]:
-                    if st.button(label_btn, key=f"grid_q_{i}", use_container_width=True):
+                    if st.button(label_btn, key=f"grid_q_{i}", use_container_width=True, type="secondary"):
                         estudio["idx_actual"] = i
                         st.rerun()
 
@@ -955,7 +959,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
                 st.error(f"❌ Incorrecto. La respuesta correcta es la alternativa **{letra_correcta}**.")
 
         with st.expander("💡 Explicación Técnica Pedagógica (Instructor IA)"):
-            if st.button("🔍 Solicitar Explicación al Instructor de Vuelo IA", key=f"btn_exp_ia_{idx_actual}"):
+            if st.button("🔍 Solicitar Explicación al Instructor de Vuelo IA", key=f"btn_exp_ia_{idx_actual}", type="secondary"):
                 if not st.session_state["gemini_api_key"]:
                     st.error("Configura tu API Key en la barra lateral para consultar al instructor.")
                 else:
@@ -1028,7 +1032,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
 
                     guardar_resultado_historial(estudio["nombre_prueba"], puntaje_final, respondidas_ok, total_preguntas, desglose_cat)
                     st.success(f"🎉 ¡Simulación finalizada! Puntaje obtenido: {puntaje_final}% ({respondidas_ok}/{total_preguntas}). Guardado en historial.")
-                    if st.button("Volver al Menú Principal", key="btn_fin_menu", use_container_width=True):
+                    if st.button("Volver al Menú Principal", key="btn_fin_menu", use_container_width=True, type="secondary"):
                         st.session_state.vista = "home"
                         st.session_state.modo_estudio_data = None
                         st.rerun()
@@ -1115,7 +1119,7 @@ else:
             with col3:
                 col_btn_a, col_btn_b = st.columns(2)
                 with col_btn_a:
-                    if st.button("🚀 Iniciar", key=f"start_{b_id}", use_container_width=True):
+                    if st.button("🚀 Iniciar", key=f"start_{b_id}", use_container_width=True, type="primary"):
                         limpiar_radios_session()
                         preg = list(todas_preguntas)
                         if modo_aleatorio:
@@ -1132,7 +1136,7 @@ else:
                             st.rerun()
                 with col_btn_b:
                     btn_repaso_disabled = (num_falladas == 0)
-                    if st.button("🔴 Repaso", key=f"repaso_{b_id}", disabled=btn_repaso_disabled, help="Estudia solo las preguntas que has fallado previamente", use_container_width=True):
+                    if st.button("🔴 Repaso", key=f"repaso_{b_id}", disabled=btn_repaso_disabled, help="Estudia solo las preguntas que has fallado previamente", use_container_width=True, type="primary"):
                         limpiar_radios_session()
                         preg_repaso = [q for q in todas_preguntas if q.get("idx_original") in indices_falladas]
                         if modo_aleatorio:
@@ -1148,7 +1152,7 @@ else:
                             st.session_state.vista = "estudio"
                             st.rerun()
             with col4:
-                if st.button("🗑️", key=f"del_{b_id}", help="Eliminar este banco de preguntas"):
+                if st.button("🗑️", key=f"del_{b_id}", help="Eliminar este banco de preguntas", type="secondary"):
                     if eliminar_banco(b_id):
                         st.toast(f"Banco '{banco_data.get('nombre', b_id)}' eliminado.")
                         time.sleep(0.5)
