@@ -193,11 +193,10 @@ SESSION_FILE = "sesion_activa.json"
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # --- CONFIGURACIÓN Y DESCUBRIMIENTO DINÁMICO DE GEMINI ---
-api_key_configurada = ""
+api_key_configurada = "AQ.Ab8RN6Ju0Z1U2_Tdi4qikYt5TYHolQyFJUA0pfgQoHwLUONYBQ"
 try:
     if "GEMINI_API_KEY" in st.secrets:
-        # Purgamos agresivamente cualquier salto de línea que venga desde secrets
-        api_key_configurada = str(st.secrets["GEMINI_API_KEY"]).replace("\n", "").replace("\r", "").strip()
+        api_key_configurada = st.secrets["GEMINI_API_KEY"]
 except Exception:
     pass
 
@@ -488,9 +487,7 @@ def procesar_documento_multimodal(file_path, api_key, modelo_preferido, file_ext
             st.error("⚠️ Ingrese una API Key válida antes de procesar.")
             return None
 
-        # Sanitización profunda antes de conectar
-        api_key_clean = api_key.replace("\n", "").replace("\r", "").strip()
-        client = genai.Client(api_key=api_key_clean)
+        client = genai.Client(api_key=api_key.strip())
 
         ext = file_extension.lower().replace(".", "")
         mime_types = {
@@ -615,9 +612,7 @@ def obtener_explicacion_ia(pregunta_text, alternativas, idx_correcta, idx_elegid
         return "⚠️ La librería `google-genai` no está disponible. Asegúrate de incluirla en tu archivo `requirements.txt`."
 
     try:
-        # Sanitización profunda
-        api_key_clean = api_key.replace("\n", "").replace("\r", "").strip()
-        client = genai.Client(api_key=api_key_clean)
+        client = genai.Client(api_key=api_key.strip())
         
         alt_corr_text = "N/A"
         if idx_correcta is not None and isinstance(idx_correcta, int) and 0 <= idx_correcta < len(alternativas):
@@ -719,11 +714,11 @@ datos_usuario = usuarios_db.get(st.session_state.usuario_actual, {"nombre": "Pil
 
 # --- BARRA LATERAL ---
 with st.sidebar:
-    st.markdown(f"### 👨‍‍✈️ {datos_usuario.get('nombre', 'Piloto')}")
+    st.markdown(f"### 👨‍✈️️ {datos_usuario.get('nombre', 'Piloto')}")
     st.caption("Piloto en Entrenamiento")
     st.divider()
     
-    texto_modo = "🌙 Activar Modo Lectura Nocturna (Filtro Cálido)" if not st.session_state.modo_oscuro else "☀️️ Cambiar a Modo Claro"
+    texto_modo = "🌙 Activar Modo Lectura Nocturna (Filtro Cálido)" if not st.session_state.modo_oscuro else "☀️ Cambiar a Modo Claro"
     if st.button(texto_modo, use_container_width=True, type="secondary"):
         st.session_state.modo_oscuro = not st.session_state.modo_oscuro
         st.rerun()
@@ -734,21 +729,11 @@ with st.sidebar:
     if not GENAI_DISPONIBLE:
         st.warning("⚠️ Módulo `google-genai` no detectado. Revisa tu archivo `requirements.txt` en GitHub.")
     
-    # NUEVO: Input siempre visible para permitir al usuario corregir claves atascadas
-    clave_actual = st.session_state.get("gemini_api_key", "")
-    user_input_key = st.text_input(
-        "Google Gemini API Key", 
-        value=clave_actual, 
-        type="password", 
-        help="Ingresa tu clave de AI Studio (ej. AQ... o AIza...)"
-    )
-    
-    if user_input_key and user_input_key != clave_actual:
-        # Se limpia profundamente cualquier salto de línea ingresado por error
-        st.session_state["gemini_api_key"] = user_input_key.replace("\n", "").replace("\r", "").strip()
-        st.success("¡API Key guardada y limpiada correctamente!")
-        time.sleep(0.5)
-        st.rerun()
+    if not st.session_state["gemini_api_key"]:
+        user_input_key = st.text_input("Google Gemini API Key", type="password", help="Ingresa tu clave de AI Studio")
+        if user_input_key:
+            st.session_state["gemini_api_key"] = user_input_key.strip()
+            st.success("¡API Key guardada!")
 
     st.divider()
     if st.button("👤 Perfil de Usuario", use_container_width=True):
