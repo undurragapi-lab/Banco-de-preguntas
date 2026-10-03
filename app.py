@@ -50,11 +50,10 @@ manifest_dict = {
     ]
 }
 manifest_bytes = json.dumps(manifest_dict).encode("utf-8")
-manifest_b64 = base64.b64encode(manifest_bytes).decode("utf-8")
-manifest_data_uri = f"data:application/manifest+json;base64,{manifest_b64}"
+manifest_data_uri = f"data:application/manifest+json;base64,{base64.b64encode(manifest_bytes).decode('utf-8')}"
 
 
-# --- GESTIÓN DE ESTADOS DE SESIÓN (MODO CLARO POR DEFECTO) ---
+# --- GESTIÓN DE ESTADOS DE SESIÓN ---
 if "modo_oscuro" not in st.session_state:
     st.session_state.modo_oscuro = False
 if "vista" not in st.session_state:
@@ -63,106 +62,104 @@ if "modo_estudio_data" not in st.session_state:
     st.session_state.modo_estudio_data = None
 
 
-# --- CSS: MODO CLARO, MODO LECTURA NOCTURNA Y CONTROL DE BARRA LATERAL ---
-css_light = """
-    :root {
-        --bg-main: #f8fafc;
-        --bg-card: #ffffff;
-        --accent-blue: #0284c7;
-        --accent-hover: #0369a1;
-        --text-main: #0f172a;
-        --text-muted: #64748b;
-        --border-color: #e2e8f0;
-        --sidebar-bg: #f1f5f9;
-    }
-"""
+# --- INYECCIÓN DE ESTILOS SIN VARIABLES :ROOT ---
+es_modo_oscuro = st.session_state.get('modo_oscuro', False)
 
-css_dark = """
-    :root {
-        --bg-main: #171514;
-        --bg-card: #23201e;
-        --accent-blue: #d97706;
-        --accent-hover: #b45309;
-        --text-main: #f5efe6;
-        --text-muted: #a8a29e;
-        --border-color: #3f3835;
-        --sidebar-bg: #1c1917;
-    }
-"""
-
-css_activo = css_dark if st.session_state.modo_oscuro else css_light
+if es_modo_oscuro:
+    # MODO NOCTURNO CÁLIDO
+    bg_main = "#171514"
+    bg_card = "#23201e"
+    sidebar_bg = "#1c1917"
+    text_main = "#f5efe6"
+    text_muted = "#a8a29e"
+    border_color = "#3f3835"
+    accent = "#d97706"
+else:
+    # MODO CLARO
+    bg_main = "#f8fafc"
+    bg_card = "#ffffff"
+    sidebar_bg = "#f1f5f9"
+    text_main = "#0f172a"
+    text_muted = "#64748b"
+    border_color = "#e2e8f0"
+    accent = "#0284c7"
 
 st.markdown(f"""
 <link rel="manifest" href="{manifest_data_uri}">
-<meta name="theme-color" content="#d97706">
+<meta name="theme-color" content="{accent}">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <style>
-    {css_activo}
-
-    /* FORZADO DE ESTILOS EN CONTENEDORES INTERNOS DE STREAMLIT */
-    .stApp, [data-testid="stAppViewContainer"], [data-testid="stMainBlockContainer"] {{
-        background-color: var(--bg-main) !important;
-        color: var(--text-main) !important;
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    /* 1. FONDO PRINCIPAL Y CONTENEDORES */
+    html, body, .stApp, 
+    [data-testid="stAppViewContainer"], 
+    [data-testid="stHeader"],
+    [data-testid="stMainBlockContainer"],
+    section.main {{
+        background-color: {bg_main} !important;
+        color: {text_main} !important;
     }}
 
+    /* 2. BARRA LATERAL (SIDEBAR) */
+    section[data-testid="stSidebar"], 
+    [data-testid="stSidebarContent"] {{
+        background-color: {sidebar_bg} !important;
+        border-right: 1px solid {border_color} !important;
+    }}
+
+    /* 3. TEXTOS, TÍTULOS Y ETIQUETAS */
+    h1, h2, h3, h4, h5, h6, p, span, label, li, .stMarkdown {{
+        color: {text_main} !important;
+    }}
+    
+    .stCaption, small {{
+        color: {text_muted} !important;
+    }}
+
+    /* 4. TARJETAS, CONTENEDORES Y ARCHIVO SUBIDO */
+    [data-testid="stForm"],
+    [data-testid="stFileUploader"],
+    div[data-testid="metric-container"],
+    .stExpander {{
+        background-color: {bg_card} !important;
+        border: 1px solid {border_color} !important;
+        border-radius: 10px !important;
+    }}
+
+    /* 5. CAMPOS DE TEXTO E INPUTS */
+    .stTextInput input, .stSelectbox select, .stPasswordInput input {{
+        background-color: {bg_card} !important;
+        color: {text_main} !important;
+        border: 1px solid {border_color} !important;
+        border-radius: 8px !important;
+    }}
+
+    /* 6. BOTONES */
+    div.stButton > button {{
+        background-color: {accent} !important;
+        color: #ffffff !important;
+        border: none !important;
+        border-radius: 8px !important;
+        font-weight: 600 !important;
+    }}
+
+    div.stButton > button[kind="secondary"] {{
+        background-color: {bg_card} !important;
+        color: {text_main} !important;
+        border: 1px solid {border_color} !important;
+    }}
+
+    /* AJUSTES ADICIONALES DE UI */
     header[data-testid="stHeader"] {{
         background-color: transparent !important;
         z-index: 99999;
     }}
 
-    section[data-testid="stSidebar"] {{
-        background-color: var(--sidebar-bg) !important;
-        border-right: 1px solid var(--border-color) !important;
-    }}
-
-    h1, h2, h3, h4, h5, h6, p, span, label, .stMarkdown {{
-        color: var(--text-main) !important;
-    }}
-
     button[data-testid="stSidebarCollapseButton"], button[data-testid="baseButton-header"] {{
-        color: var(--text-main) !important;
-        background-color: var(--bg-card) !important;
-        border: 1px solid var(--border-color) !important;
+        color: {text_main} !important;
+        background-color: {bg_card} !important;
+        border: 1px solid {border_color} !important;
         border-radius: 8px !important;
-    }}
-
-    div.stButton > button {{
-        background: linear-gradient(135deg, var(--accent-blue) 0%, var(--accent-hover) 100%);
-        color: white !important;
-        border: none;
-        border-radius: 8px;
-        padding: 0.6rem 1.2rem;
-        font-weight: 600;
-        box-shadow: 0 4px 12px rgba(217, 119, 6, 0.15);
-        transition: all 0.2s ease-in-out;
-    }}
-
-    div.stButton > button:hover {{
-        transform: translateY(-2px);
-    }}
-
-    div.stButton > button[kind="secondary"] {{
-        background: var(--bg-card);
-        border: 1px solid var(--border-color);
-        color: var(--text-main) !important;
-        box-shadow: none;
-    }}
-
-    .stTextInput input, .stSelectbox select, .stPasswordInput input {{
-        background-color: var(--bg-card) !important;
-        color: var(--text-main) !important;
-        border: 1px solid var(--border-color) !important;
-        border-radius: 8px !important;
-        padding: 0.6rem 1rem !important;
-    }}
-
-    div[data-testid="metric-container"] {{
-        background-color: var(--bg-card) !important;
-        border: 1px solid var(--border-color) !important;
-        padding: 1.2rem;
-        border-radius: 10px;
     }}
 
     .stRadio label {{
@@ -172,7 +169,7 @@ st.markdown(f"""
     }}
 
     .stRadio label:hover {{
-        background-color: var(--border-color);
+        background-color: {border_color} !important;
     }}
 </style>
 """, unsafe_allow_html=True)
@@ -677,8 +674,8 @@ def obtener_explicacion_ia(pregunta_text, alternativas, idx_correcta, idx_elegid
 
 # --- CONTROL DE ACCESO ---
 if st.session_state.usuario_actual is None:
-    st.markdown("<h2 style='text-align: center; color: var(--accent-blue); padding-top: 5vh;'>✈️ AeroStudio Pro</h2>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: var(--text-muted); margin-bottom: 2rem;'>Plataforma avanzada de estudio y entrenamiento aeronáutico con IA integrada.</p>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center; color: var(--accent-blue, #0284c7); padding-top: 5vh;'>✈️ AeroStudio Pro</h2>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: var(--text-muted, #64748b); margin-bottom: 2rem;'>Plataforma avanzada de estudio y entrenamiento aeronáutico con IA integrada.</p>", unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
