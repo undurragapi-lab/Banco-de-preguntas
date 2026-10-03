@@ -30,7 +30,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- CONFIGURACIÓN PWA INLINE (COMPATIBILIDAD CON CHROME MOBILE) ---
+# --- CONFIGURACIÓN PWA INLINE ---
 manifest_dict = {
     "name": "AeroStudio Pro",
     "short_name": "AeroStudio",
@@ -50,7 +50,40 @@ manifest_bytes = json.dumps(manifest_dict).encode("utf-8")
 manifest_b64 = base64.b64encode(manifest_bytes).decode("utf-8")
 manifest_data_uri = f"data:application/manifest+json;base64,{manifest_b64}"
 
-# --- GESTIÓN DE ESTADOS DE SESIÓN (MODO CLARO POR DEFECTO) ---
+# --- OPERACIONES SEGURAS DE ARCHIVOS (BLINDAJE DE PERSISTENCIA) ---
+DATA_DIR = "data_bancos"
+HISTORY_FILE = "historial_resultados.json"
+USERS_FILE = "usuarios.json"
+SESSION_FILE = "sesion_activa.json"
+
+os.makedirs(DATA_DIR, exist_ok=True)
+
+def safe_json_read(filepath, default_value=None):
+    """Lee un archivo JSON con gestión de errores segura."""
+    if default_value is None:
+        default_value = {}
+    if not os.path.exists(filepath):
+        return default_value
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default_value
+
+def safe_json_write(filepath, data):
+    """Escribe en un archivo JSON de forma atómica para evitar corruptelas."""
+    try:
+        dir_name = os.path.dirname(filepath) or "."
+        with tempfile.NamedTemporaryFile("w", delete=False, dir=dir_name, encoding="utf-8") as tf:
+            json.dump(data, tf, ensure_ascii=False, indent=4)
+            temp_name = tf.name
+        os.replace(temp_name, filepath)
+        return True
+    except Exception as e:
+        st.error(f"Error al guardar datos en {filepath}: {e}")
+        return False
+
+# --- GESTIÓN DE ESTADOS DE SESIÓN ---
 if "modo_oscuro" not in st.session_state:
     st.session_state.modo_oscuro = False
 if "vista" not in st.session_state:
@@ -58,7 +91,7 @@ if "vista" not in st.session_state:
 if "modo_estudio_data" not in st.session_state:
     st.session_state.modo_estudio_data = None
 
-# --- CSS: MODO CLARO, MODO LECTURA NOCTURNA Y CONTROL DE BARRA LATERAL ---
+# --- CSS MODO CLARO / OSCURO ---
 css_light = """
     :root {
         --bg-main: #f8fafc;
@@ -156,14 +189,6 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-# --- ALMACENAMIENTO LOCAL DE BANCOS Y USUARIOS ---
-DATA_DIR = "data_bancos"
-HISTORY_FILE = "historial_resultados.json"
-USERS_FILE = "usuarios.json"
-SESSION_FILE = "sesion_activa.json"
-
-os.makedirs(DATA_DIR, exist_ok=True)
-
 # --- CONFIGURACIÓN Y DESCUBRIMIENTO DINÁMICO DE GEMINI ---
 api_key_configurada = ""
 try:
@@ -180,8 +205,10 @@ if "gemini_modelo" not in st.session_state:
 
 def obtener_modelos_activos_live(client):
     modelos_encontrados = []
+    respaldos = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
+    
     if not GENAI_DISPONIBLE or client is None:
-        return ["gemini-2.5-flash", "gemini-3.1-pro-preview", "gemini-1.5-flash"]
+        return respaldos
         
     try:
         lista_api = client.models.list()
@@ -193,7 +220,6 @@ def obtener_modelos_activos_live(client):
     except Exception:
         pass
     
-    respaldos = ["gemini-2.5-flash", "gemini-3.1-pro-preview", "gemini-1.5-flash"]
     for r in respaldos:
         if r not in modelos_encontrados:
             modelos_encontrados.append(r)
@@ -235,37 +261,33 @@ def ejecutar_gemini_con_fallback(client, contents_payload, config, modelo_prefer
             else:
                 raise e
                 
-    raise ultimo_error
+    raise ultimo_error or RuntimeError("No se pudo conectar a ningún modelo de Gemini disponible.")
 
 def limpiar_radios_session():
     keys_a_borrar = [k for k in st.session_state.keys() if k.startswith("radio_alt_")]
     for k in keys_a_borrar:
         del st.session_state[k]
 
-# --- GESTIÓN DE USUARIOS Y AUTENTICACIÓN (OPCIONAL 1 Y 2 INTEGRADAS) ---
+# --- HASHING Y AUTENTICACIÓN SEGURA ---
+def hash_password(password_plain):
+    return hashlib.sha256(password_plain.encode("utf-8")).hexdigest()
+
 def cargar_usuarios():
-    if os.path.exists(USERS_FILE):
-        try:
-            with open(USERS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError):
-            return {}
-    return {}
+    return safe_json_read(USERS_FILE, {})
 
 def guardar_usuarios(usuarios):
-    with open(USERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(usuarios, f, ensure_ascii=False, indent=4)
+    return safe_json_write(USERS_FILE, usuarios)
 
 def inicializar_usuarios():
-    """Inicializa la base de datos en session_state y en archivo, registrando el usuario administrador por defecto."""
+    """Inicializa la BD de usuarios y garantiza la cuenta Dev / Admin."""
     usuarios = cargar_usuarios()
     
-    # OPCIÓN 2: Garantizar usuario Dev / Administrador
+    # Usuario Admin por defecto
     if "undurragapi@gmail.com" not in usuarios:
         usuarios["undurragapi@gmail.com"] = {
             "nombre": "Pablo Undurraga",
             "email": "undurragapi@gmail.com",
-            "password": "pablo9596",
+            "password": hash_password("pablo9596"),
             "rol": "admin"
         }
         guardar_usuarios(usuarios)
@@ -274,7 +296,7 @@ def inicializar_usuarios():
     return usuarios
 
 def autenticar_usuario(email_input, password_input):
-    """OPCIÓN 1: Sanea espacios/mayúsculas y valida credenciales (soporta texto plano y hash)."""
+    """Valida credenciales de forma segura con hashing SHA-256."""
     usuarios_db = inicializar_usuarios()
     
     if not email_input or not password_input:
@@ -283,34 +305,30 @@ def autenticar_usuario(email_input, password_input):
     email_clean = email_input.strip().lower()
     pass_clean = password_input.strip()
     
-    # 1. Validar existencia del correo
     if email_clean not in usuarios_db:
         return False, "Correo o contraseña incorrectos."
     
     usuario = usuarios_db[email_clean]
     pass_guardada = str(usuario.get("password", ""))
+    pass_hash_input = hash_password(pass_clean)
     
-    # Generar Hash SHA-256 por compatibilidad
-    pass_hash_input = hashlib.sha256(pass_clean.encode()).hexdigest()
-    
-    # 2. Validar contraseña (soporta texto plano y hash)
-    if pass_clean == pass_guardada or pass_hash_input == pass_guardada:
+    # Verificación con soporte para migración desde texto plano
+    if pass_hash_input == pass_guardada or pass_clean == pass_guardada:
+        # Migración automática a hash si estaba guardado en texto plano
+        if pass_clean == pass_guardada and pass_hash_input != pass_guardada:
+            usuarios_db[email_clean]["password"] = pass_hash_input
+            guardar_usuarios(usuarios_db)
+            
         return True, f"¡Bienvenido, {usuario.get('nombre', 'Usuario')}!"
     
     return False, "Correo o contraseña incorrectos."
 
 def cargar_sesion_persistida():
-    if os.path.exists(SESSION_FILE):
-        try:
-            with open(SESSION_FILE, "r", encoding="utf-8") as f:
-                return json.load(f).get("usuario")
-        except (json.JSONDecodeError, IOError):
-            return None
-    return None
+    data = safe_json_read(SESSION_FILE, {})
+    return data.get("usuario")
 
 def guardar_sesion_persistida(email):
-    with open(SESSION_FILE, "w", encoding="utf-8") as f:
-        json.dump({"usuario": email}, f, ensure_ascii=False, indent=4)
+    safe_json_write(SESSION_FILE, {"usuario": email})
 
 def eliminar_sesion_persistida():
     if os.path.exists(SESSION_FILE):
@@ -327,7 +345,7 @@ if "usuario_actual" not in st.session_state:
     else:
         st.session_state.usuario_actual = None
 
-# --- BANCOS DE PREGUNTAS ---
+# --- GESTIÓN DE BANCOS DE PREGUNTAS ---
 def guardar_banco(nombre_id, data):
     ruta = os.path.join(DATA_DIR, f"{nombre_id}.json")
     
@@ -335,28 +353,22 @@ def guardar_banco(nombre_id, data):
         if "idx_original" not in q:
             q["idx_original"] = idx
 
-    if os.path.exists(ruta):
-        try:
-            with open(ruta, "r", encoding="utf-8") as f:
-                banco_antiguo = json.load(f)
-            
-            mapa_manuales = {}
-            for idx_ant, q_ant in enumerate(banco_antiguo.get("preguntas", [])):
-                if q_ant.get("correcta") is not None:
-                    key_m = f"{q_ant.get('idx_original', idx_ant)}_{q_ant['pregunta'].strip()}"
-                    mapa_manuales[key_m] = q_ant["correcta"]
-            
-            data["falladas"] = banco_antiguo.get("falladas", {})
+    banco_antiguo = safe_json_read(ruta, None)
+    if banco_antiguo:
+        mapa_manuales = {}
+        for idx_ant, q_ant in enumerate(banco_antiguo.get("preguntas", [])):
+            if q_ant.get("correcta") is not None:
+                key_m = f"{q_ant.get('idx_original', idx_ant)}_{q_ant.get('pregunta', '').strip()}"
+                mapa_manuales[key_m] = q_ant["correcta"]
+        
+        data["falladas"] = banco_antiguo.get("falladas", {})
 
-            for idx_n, q_nueva in enumerate(data.get("preguntas", [])):
-                key_n = f"{q_nueva.get('idx_original', idx_n)}_{q_nueva['pregunta'].strip()}"
-                if key_n in mapa_manuales and q_nueva.get("correcta") is None:
-                    q_nueva["correcta"] = mapa_manuales[key_n]
-        except (json.JSONDecodeError, IOError, KeyError):
-            pass
+        for idx_n, q_nueva in enumerate(data.get("preguntas", [])):
+            key_n = f"{q_nueva.get('idx_original', idx_n)}_{q_nueva.get('pregunta', '').strip()}"
+            if key_n in mapa_manuales and q_nueva.get("correcta") is None:
+                q_nueva["correcta"] = mapa_manuales[key_n]
 
-    with open(ruta, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+    safe_json_write(ruta, data)
 
 def actualizar_pregunta_individual(nombre_id, idx_original, nueva_correcta):
     banco_data = cargar_banco(nombre_id)
@@ -369,13 +381,7 @@ def actualizar_pregunta_individual(nombre_id, idx_original, nueva_correcta):
 
 def cargar_banco(nombre_id):
     ruta = os.path.join(DATA_DIR, f"{nombre_id}.json")
-    if os.path.exists(ruta):
-        try:
-            with open(ruta, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError):
-            return None
-    return None
+    return safe_json_read(ruta, None)
 
 def eliminar_banco(nombre_id):
     ruta = os.path.join(DATA_DIR, f"{nombre_id}.json")
@@ -416,15 +422,11 @@ def limpiar_falladas_resueltas(nombre_id, preguntas_resueltas_orig_ok):
     banco_data["falladas"][usuario] = list(actuales)
     guardar_banco(nombre_id, banco_data)
 
-# --- HISTORIAL Y DIAGNÓSTICO POR ÁREAS TEMÁTICAS ---
+# --- HISTORIAL Y DIAGNÓSTICO ---
 def guardar_resultado_historial(nombre_prueba, puntaje_pct, correctas, total, desglose_categorias=None):
-    historial = []
-    if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                historial = json.load(f)
-        except (json.JSONDecodeError, IOError):
-            historial = []
+    historial = safe_json_read(HISTORY_FILE, [])
+    if not isinstance(historial, list):
+        historial = []
     
     historial.append({
         "usuario": st.session_state.usuario_actual,
@@ -437,32 +439,36 @@ def guardar_resultado_historial(nombre_prueba, puntaje_pct, correctas, total, de
         "desglose_categorias": desglose_categorias or {}
     })
     
-    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(historial, f, ensure_ascii=False, indent=4)
+    safe_json_write(HISTORY_FILE, historial)
 
 def obtener_historial_reciente():
-    if not os.path.exists(HISTORY_FILE):
-        return []
-    try:
-        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-            historial = json.load(f)
-    except (json.JSONDecodeError, IOError):
+    historial = safe_json_read(HISTORY_FILE, [])
+    if not isinstance(historial, list):
         return []
     
     limite_tiempo = datetime.now().timestamp() - (20 * 24 * 60 * 60)
-    filtrado = [h for h in historial if h.get("timestamp", 0) >= limite_tiempo and h.get("usuario") == st.session_state.usuario_actual]
-    return sorted(filtrado, key=lambda x: x["timestamp"], reverse=True)
+    filtrado = [h for h in historial if isinstance(h, dict) and h.get("timestamp", 0) >= limite_tiempo and h.get("usuario") == st.session_state.usuario_actual]
+    return sorted(filtrado, key=lambda x: x.get("timestamp", 0), reverse=True)
 
-# --- PROCESAMIENTO CON GOOGLE FILE API, VISIÓN Y AUTO-CONEXIÓN ---
+# --- EXTRACCIÓN ROBUSTA Y PROCESAMIENTO MULTIMODAL CON GEMINI ---
 def limpiar_respuesta_json(texto_raw):
-    texto_limpio = re.sub(r"^```json\s*", "", texto_raw.strip(), flags=re.MULTILINE)
-    texto_limpio = re.sub(r"^```\s*", "", texto_limpio, flags=re.MULTILINE)
-    texto_limpio = re.sub(r"```$", "", texto_limpio, flags=re.MULTILINE)
-    return texto_limpio.strip()
+    """Extrae el objeto o arreglo JSON incluso si hay texto explicativo adicional."""
+    if not texto_raw:
+        return ""
+    texto = texto_raw.strip()
+    texto = re.sub(r"^```json\s*", "", texto, flags=re.MULTILINE)
+    texto = re.sub(r"^```\s*", "", texto, flags=re.MULTILINE)
+    texto = re.sub(r"```$", "", texto, flags=re.MULTILINE).strip()
+    
+    # Intento de extracción con regex por si la IA incluyó comentarios extra
+    match = re.search(r'(\{.*\}|\[.*\])', texto, re.DOTALL)
+    if match:
+        return match.group(0)
+    return texto
 
 def procesar_documento_multimodal(file_path, api_key, modelo_preferido, file_extension):
     if not GENAI_DISPONIBLE:
-        st.error("⚠️ La librería `google-genai` no está instalada en el servidor. Asegúrate de incluir `google-genai` en el archivo `requirements.txt`.")
+        st.error("⚠️ La librería `google-genai` no está instalada en el servidor.")
         return None
 
     archivo_subido = None
@@ -487,7 +493,7 @@ def procesar_documento_multimodal(file_path, api_key, modelo_preferido, file_ext
                 config={"mime_type": mime_type}
             )
 
-        with st.spinner("👁 Conectando dinámicamente con Gemini y analizando documento..."):
+        with st.spinner("👁 Analizando documento e identificando pauta de respuestas con Gemini..."):
             prompt = """
             Eres un sistema experto en visión artificial, análisis de exámenes y pedagogía aeronáutica.
             Tu tarea es analizar VISUALMENTE este documento completo y extraer todas las preguntas, sus alternativas,
@@ -495,13 +501,13 @@ def procesar_documento_multimodal(file_path, api_key, modelo_preferido, file_ext
 
             EVALUACIÓN VISUAL, PAUTA Y CATEGORIZACIÓN:
             1. Examina cada página del documento.
-            2. Identifica la pregunta y sus alternativas (A, B, C, D).
+            2. Identifica la pregunta y sus alternativas (A, B, C, D, etc.).
             3. BUSCA MARCAS VISUALES DE RESPUESTA:
                - Marcas a mano o lápiz (círculos, cruces, subrayados, vistos).
                - Marcas de editor de PDF (resaltados amarillos/verdes, círculos rojos, texto en color/negrita).
                - Pautas impresas en el documento original.
-            4. Registra en 'respuesta_correcta' exactamente la alternativa marcada visualmente en el documento, sin corregir errores del texto original.
-            5. CLASIFICA LA MATERIA en 'categoria': Asigna una categoría aeronáutica oficial a cada pregunta, por ejemplo:
+            4. Registra en 'respuesta_correcta' exactamente la alternativa marcada visualmente en el documento.
+            5. CLASIFICA LA MATERIA en 'categoria':
                - "Reglamentación y Normativa"
                - "Meteorología Aeronáutica"
                - "Navegación y Planificación"
@@ -511,7 +517,7 @@ def procesar_documento_multimodal(file_path, api_key, modelo_preferido, file_ext
                - "Procedimientos Operativos"
 
             FORMATO DE SALIDA ESTRICTO (JSON):
-            Devuelve ÚNICAMENTE un objeto JSON válido con la siguiente estructura exacta:
+            Devuelve ÚNICAMENTE un objeto JSON válido con la siguiente estructura:
             {
               "preguntas": [
                 {
@@ -522,7 +528,7 @@ def procesar_documento_multimodal(file_path, api_key, modelo_preferido, file_ext
                 }
               ]
             }
-            En "respuesta_correcta" indica únicamente la letra ("A", "B", "C" o "D").
+            En "respuesta_correcta" indica únicamente la letra ("A", "B", "C", "D", etc.).
             """
 
             config = types.GenerateContentConfig(
@@ -530,7 +536,7 @@ def procesar_documento_multimodal(file_path, api_key, modelo_preferido, file_ext
                 temperature=0.0
             )
 
-            response, modelo_activo = ejecutar_gemini_con_fallback(
+            response, _ = ejecutar_gemini_con_fallback(
                 client=client,
                 contents_payload=[archivo_subido, prompt],
                 config=config,
@@ -542,9 +548,11 @@ def procesar_documento_multimodal(file_path, api_key, modelo_preferido, file_ext
             json_limpio = limpiar_respuesta_json(response.text)
             data = json.loads(json_limpio)
             
-            if "preguntas" in data:
+            letras_abecedario = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']
+            
+            if "preguntas" in data and isinstance(data["preguntas"], list):
                 for idx_q, q in enumerate(data["preguntas"]):
-                    enunciado = q.get("pregunta", "")
+                    enunciado = q.get("pregunta", "").strip()
                     opciones_textos = q.get("opciones", [])
                     letra_corr = str(q.get("respuesta_correcta", "A")).strip().upper()
                     categoria_q = q.get("categoria", "General").strip()
@@ -552,9 +560,9 @@ def procesar_documento_multimodal(file_path, api_key, modelo_preferido, file_ext
                     alternativas_formateadas = []
                     correcta_idx = None
                     
-                    for idx_a, texto_alt in enumerate(opciones_textos[:4]):
-                        letra_let = ['A', 'B', 'C', 'D'][idx_a]
-                        match_prefijo = bool(re.match(rf"^{letra_corr}[\.\)\-\s]", texto_alt.strip(), re.IGNORECASE))
+                    for idx_a, texto_alt in enumerate(opciones_textos):
+                        letra_let = letras_abecedario[idx_a] if idx_a < len(letras_abecedario) else str(idx_a + 1)
+                        match_prefijo = bool(re.match(rf"^{letra_corr}[\.\)\-\s]", str(texto_alt).strip(), re.IGNORECASE))
                         es_correcta = (letra_let == letra_corr) or match_prefijo
                         
                         if es_correcta:
@@ -562,7 +570,7 @@ def procesar_documento_multimodal(file_path, api_key, modelo_preferido, file_ext
                         
                         alternativas_formateadas.append({
                             "letra": letra_let,
-                            "texto": texto_alt,
+                            "texto": str(texto_alt),
                             "marcada": es_correcta
                         })
                     
@@ -590,10 +598,10 @@ def procesar_documento_multimodal(file_path, api_key, modelo_preferido, file_ext
             except Exception:
                 pass
 
-# --- EXPLICACIÓN TÉCNICA PEDAGÓGICA (IA) CON CONEXIÓN DINÁMICA ---
+# --- EXPLICACIÓN TÉCNICA CON IA ---
 def obtener_explicacion_ia(pregunta_text, alternativas, idx_correcta, idx_elegida, api_key, modelo_preferido):
     if not GENAI_DISPONIBLE:
-        return "⚠️ La librería `google-genai` no está disponible. Asegúrate de incluirla en tu archivo `requirements.txt`."
+        return "⚠️ La librería `google-genai` no está disponible."
 
     try:
         client = genai.Client(api_key=api_key.strip())
@@ -615,8 +623,8 @@ def obtener_explicacion_ia(pregunta_text, alternativas, idx_correcta, idx_elegid
         Respuesta Seleccionada por el Alumno: "{alt_eleg_text}"
 
         Explicación requerida:
-        1. Explica por qué la respuesta oficial es la correcta según los reglamentos (FAR, DAN), principios aerodinámicos, meteorológicos o de CRM.
-        2. Si el alumno respondió incorrectamente, aclara de forma amable cuál fue la confusión o el error común.
+        1. Explica por qué la respuesta oficial es la correcta según los reglamentos (FAR, DAN), principios aerodinámicos, meteorológicos o CRM.
+        2. Si el alumno respondió incorrectamente, aclara cuál fue la confusión habitual.
         3. Da un consejo rápido para recordar este concepto en el examen.
         """
         
@@ -630,9 +638,9 @@ def obtener_explicacion_ia(pregunta_text, alternativas, idx_correcta, idx_elegid
         
         return response.text if response else "No se pudo generar la explicación en este momento."
     except Exception as e:
-        return f"Error al consultar el instructor de IA: {e}"
+        return f"Error al consultar al instructor de IA: {e}"
 
-# --- CONTROL DE ACCESO ---
+# --- CONTROL DE ACCESO E INICIO DE SESIÓN ---
 if st.session_state.usuario_actual is None:
     st.markdown("<h2 style='text-align: center; color: var(--accent-blue); padding-top: 5vh;'>✈️ AeroStudio Pro</h2>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: var(--text-muted); margin-bottom: 2rem;'>Plataforma avanzada de estudio y entrenamiento aeronáutico con IA integrada.</p>", unsafe_allow_html=True)
@@ -682,7 +690,7 @@ if st.session_state.usuario_actual is None:
                             usuarios_db[reg_email_clean] = {
                                 "nombre": reg_nombre_clean,
                                 "email": reg_email_clean,
-                                "password": reg_pass_clean,
+                                "password": hash_password(reg_pass_clean),
                                 "rol": "user"
                             }
                             guardar_usuarios(usuarios_db)
@@ -702,7 +710,7 @@ with st.sidebar:
     st.caption("Piloto en Entrenamiento")
     st.divider()
     
-    texto_modo = "🌙 Activar Modo Lectura Nocturna (Filtro Cálido)" if not st.session_state.modo_oscuro else "☀️ Cambiar a Modo Claro"
+    texto_modo = "🌙 Activar Modo Lectura Nocturna" if not st.session_state.modo_oscuro else "☀️ Cambiar a Modo Claro"
     if st.button(texto_modo, use_container_width=True, type="secondary"):
         st.session_state.modo_oscuro = not st.session_state.modo_oscuro
         st.rerun()
@@ -711,7 +719,7 @@ with st.sidebar:
     st.markdown("### ⚙️ Configuración de IA")
     
     if not GENAI_DISPONIBLE:
-        st.warning("⚠️ Módulo `google-genai` no detectado. Revisa tu archivo `requirements.txt` en GitHub.")
+        st.warning("⚠️ Módulo `google-genai` no detectado. Revisa tu `requirements.txt`.")
     
     if not st.session_state["gemini_api_key"]:
         user_input_key = st.text_input("Google Gemini API Key", type="password", help="Ingresa tu clave de AI Studio")
@@ -750,7 +758,7 @@ if st.session_state.vista == "perfil":
         with st.form("form_perfil"):
             nuevo_nombre = st.text_input("Nombre de usuario:", value=datos_usuario.get("nombre", ""))
             nuevo_email = st.text_input("Correo electrónico:", value=datos_usuario.get("email", ""))
-            nueva_pass = st.text_input("Nueva contraseña:", value=datos_usuario.get("password", ""), type="password")
+            nueva_pass = st.text_input("Nueva contraseña (dejar en blanco para no cambiar):", type="password")
             st.write("")
             if st.form_submit_button("Guardar Cambios", type="primary"):
                 email_viejo = st.session_state.usuario_actual
@@ -760,15 +768,18 @@ if st.session_state.vista == "perfil":
                 
                 usuarios_db = inicializar_usuarios()
                 
+                target_user = usuarios_db.get(email_viejo, {})
+                pass_final = hash_password(nueva_pass_limpia) if nueva_pass_limpia else target_user.get("password")
+                
                 if nuevo_email_limpio != email_viejo:
                     if nuevo_email_limpio in usuarios_db:
-                        st.error("El correo ya está registrado.")
+                        st.error("El correo ya está registrado por otro usuario.")
                     else:
-                        rol_actual = usuarios_db.get(email_viejo, {}).get("rol", "user")
+                        rol_actual = target_user.get("rol", "user")
                         usuarios_db[nuevo_email_limpio] = {
                             "nombre": nuevo_nombre_limpio, 
                             "email": nuevo_email_limpio, 
-                            "password": nueva_pass_limpia,
+                            "password": pass_final,
                             "rol": rol_actual
                         }
                         if email_viejo in usuarios_db:
@@ -777,20 +788,20 @@ if st.session_state.vista == "perfil":
                         st.session_state.usuarios_db = usuarios_db
                         st.session_state.usuario_actual = nuevo_email_limpio
                         guardar_sesion_persistida(nuevo_email_limpio)
-                        st.success("¡Perfil actualizado!")
+                        st.success("¡Perfil actualizado con éxito!")
                         st.rerun()
                 else:
                     usuarios_db[email_viejo]["nombre"] = nuevo_nombre_limpio
-                    usuarios_db[email_viejo]["password"] = nueva_pass_limpia
+                    usuarios_db[email_viejo]["password"] = pass_final
                     guardar_usuarios(usuarios_db)
                     st.session_state.usuarios_db = usuarios_db
-                    st.success("¡Perfil actualizado!")
+                    st.success("¡Perfil actualizado con éxito!")
                     st.rerun()
     if st.button("⬅ Volver al Inicio"):
         st.session_state.vista = "home"
         st.rerun()
 
-# --- VISTA: HISTORIAL Y DIAGNÓSTICO POR ÁREAS TEMÁTICAS ---
+# --- VISTA: HISTORIAL Y DIAGNÓSTICO ---
 elif st.session_state.vista == "historial":
     st.title("📊 Historial de Rendimiento y Diagnóstico por Materias")
     historial = obtener_historial_reciente()
@@ -835,9 +846,9 @@ elif st.session_state.vista == "historial":
         for h in historial:
             with st.container():
                 col1, col2, col3 = st.columns([3, 2, 2])
-                col1.markdown(f"**Prueba:** {h['prueba']}")
-                col2.markdown(f"📅 {h['fecha']}")
-                col3.markdown(f"🎯 **Puntaje:** {h['puntaje']}% `({h['correctas']}/{h['total']})`")
+                col1.markdown(f"**Prueba:** {h.get('prueba', 'Sin nombre')}")
+                col2.markdown(f"📅 {h.get('fecha', '')}")
+                col3.markdown(f"🎯 **Puntaje:** {h.get('puntaje', 0)}% `({h.get('correctas', 0)}/{h.get('total', 0)})`")
                 st.divider()
     if st.button("⬅️ Regresar al Inicio"):
         st.session_state.vista = "home"
@@ -846,8 +857,8 @@ elif st.session_state.vista == "historial":
 # --- VISTA: ESTUDIO (EXAMEN Y REPASO ESPACIADO) ---
 elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     estudio = st.session_state.modo_estudio_data
-    preguntas = estudio["preguntas"]
-    idx_actual = estudio["idx_actual"]
+    preguntas = estudio.get("preguntas", [])
+    idx_actual = estudio.get("idx_actual", 0)
     b_id_actual = estudio.get("b_id")
     
     if not preguntas:
@@ -857,6 +868,11 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
             st.rerun()
         st.stop()
         
+    # Verificación de límites de índice
+    if idx_actual < 0 or idx_actual >= len(preguntas):
+        idx_actual = 0
+        estudio["idx_actual"] = 0
+
     if "respuestas_usuario" not in estudio:
         estudio["respuestas_usuario"] = {}
     resp_dict = estudio["respuestas_usuario"]
@@ -871,29 +887,30 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
         st.markdown(f"**Q: {idx_actual + 1}/{total_preguntas}** &nbsp;|&nbsp; ✅ {respondidas_ok} &nbsp;|&nbsp; ❌ {respondidas_fail} &nbsp;|&nbsp; 📈 **{puntaje_porcentaje}%**")
     
     with col_top_gear:
-        with st.popover("⚙", help="Editor rápido de la respuesta actual"):
+        with st.popover("⚙", help="Editor rápido de la respuesta correcta"):
             st.markdown("#### 🛠 Ajuste de Respuesta Correcta")
             q_actual_pop = preguntas[idx_actual]
-            opciones_textos_pop = [f"{alt['letra']}.- {alt['texto']}" for alt in q_actual_pop["alternativas"]]
+            opciones_textos_pop = [f"{alt['letra']}.- {alt['texto']}" for alt in q_actual_pop.get("alternativas", [])]
             current_correct = q_actual_pop.get("correcta", 0)
             if current_correct is None or current_correct >= len(opciones_textos_pop):
                 current_correct = 0
             
-            nueva_corr_sel = st.selectbox(
-                "Selecciona la respuesta correcta:", 
-                options=range(len(opciones_textos_pop)), 
-                format_func=lambda x: opciones_textos_pop[x],
-                index=current_correct,
-                key=f"pop_corr_{idx_actual}"
-            )
-            
-            if st.button("Guardar Corrección", key=f"btn_pop_save_{idx_actual}", use_container_width=True):
-                q_actual_pop["correcta"] = nueva_corr_sel
-                idx_orig = q_actual_pop.get("idx_original", idx_actual)
-                if b_id_actual:
-                    actualizar_pregunta_individual(b_id_actual, idx_orig, nueva_corr_sel)
-                st.success("¡Respuesta actualizada y guardada!")
-                st.rerun()
+            if opciones_textos_pop:
+                nueva_corr_sel = st.selectbox(
+                    "Selecciona la respuesta correcta:", 
+                    options=range(len(opciones_textos_pop)), 
+                    format_func=lambda x: opciones_textos_pop[x],
+                    index=current_correct,
+                    key=f"pop_corr_{idx_actual}"
+                )
+                
+                if st.button("Guardar Corrección", key=f"btn_pop_save_{idx_actual}", use_container_width=True):
+                    q_actual_pop["correcta"] = nueva_corr_sel
+                    idx_orig = q_actual_pop.get("idx_original", idx_actual)
+                    if b_id_actual:
+                        actualizar_pregunta_individual(b_id_actual, idx_orig, nueva_corr_sel)
+                    st.success("¡Respuesta actualizada y guardada!")
+                    st.rerun()
 
     with col_top2:
         with st.popover("🔢 Cuadrícula", help="Ver estado de todas las preguntas"):
@@ -920,14 +937,18 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
     estado_actual_q = resp_dict[idx_actual]
     corregido = estado_actual_q.get("corregido", False)
     
-    opciones_tuplas = [(i, f"{alt['letra']}.- {alt['texto']}") for i, alt in enumerate(q_actual["alternativas"])]
+    opciones_tuplas = [(i, f"{alt['letra']}.- {alt['texto']}") for i, alt in enumerate(q_actual.get("alternativas", []))]
     
     radio_key = f"radio_alt_{idx_actual}"
     seleccion_indice_actual = estado_actual_q.get("elegida", None)
     
     current_index = None
-    if seleccion_indice_actual is not None and 0 <= seleccion_indice_actual < len(opciones_tuplas):
+    if seleccion_indice_actual is not None and isinstance(seleccion_indice_actual, int) and 0 <= seleccion_indice_actual < len(opciones_tuplas):
         current_index = seleccion_indice_actual
+
+    # Sincronización limpia del radio button
+    if radio_key not in st.session_state and current_index is not None:
+        st.session_state[radio_key] = opciones_tuplas[current_index]
 
     seleccion_tuple = st.radio(
         "Alternativas:",
@@ -1083,7 +1104,10 @@ else:
                         st.error("No se pudieron extraer preguntas o el archivo requiere revisión.")
                 finally:
                     if tmp_path and os.path.exists(tmp_path):
-                        os.unlink(tmp_path)
+                        try:
+                            os.unlink(tmp_path)
+                        except OSError:
+                            pass
             else:
                 st.warning("Falta adjuntar el documento o ingresar el título de la prueba.")
                 
