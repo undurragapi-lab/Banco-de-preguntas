@@ -5,11 +5,22 @@ import random
 import time
 import tempfile
 import base64
+import hashlib
 from datetime import datetime
 import streamlit as st
 import pandas as pd
-from google import genai
-from google.genai import types
+
+# --- IMPORTACIÓN BLINDADA DE GEMINI (EVITA COLAPSOS CRÍTICOS) ---
+GENAI_DISPONIBLE = False
+genai = None
+types = None
+
+try:
+    from google import genai
+    from google.genai import types
+    GENAI_DISPONIBLE = True
+except ImportError:
+    GENAI_DISPONIBLE = False
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
@@ -169,6 +180,9 @@ if "gemini_modelo" not in st.session_state:
 
 def obtener_modelos_activos_live(client):
     modelos_encontrados = []
+    if not GENAI_DISPONIBLE or client is None:
+        return ["gemini-2.5-flash", "gemini-3.1-pro-preview", "gemini-1.5-flash"]
+        
     try:
         lista_api = client.models.list()
         for m in lista_api:
@@ -187,6 +201,9 @@ def obtener_modelos_activos_live(client):
     return modelos_encontrados
 
 def ejecutar_gemini_con_fallback(client, contents_payload, config, modelo_preferido):
+    if not GENAI_DISPONIBLE or client is None:
+        raise ImportError("La librería google-genai no está disponible en el servidor.")
+
     modelos_disponibles_live = obtener_modelos_activos_live(client)
     
     candidatos = []
@@ -225,6 +242,7 @@ def limpiar_radios_session():
     for k in keys_a_borrar:
         del st.session_state[k]
 
+# --- GESTIÓN DE USUARIOS Y AUTENTICACIÓN (OPCIONAL 1 Y 2 INTEGRADAS) ---
 def cargar_usuarios():
     if os.path.exists(USERS_FILE):
         try:
@@ -237,6 +255,49 @@ def cargar_usuarios():
 def guardar_usuarios(usuarios):
     with open(USERS_FILE, "w", encoding="utf-8") as f:
         json.dump(usuarios, f, ensure_ascii=False, indent=4)
+
+def inicializar_usuarios():
+    """Inicializa la base de datos en session_state y en archivo, registrando el usuario administrador por defecto."""
+    usuarios = cargar_usuarios()
+    
+    # OPCIÓN 2: Garantizar usuario Dev / Administrador
+    if "undurragapi@gmail.com" not in usuarios:
+        usuarios["undurragapi@gmail.com"] = {
+            "nombre": "Pablo Undurraga",
+            "email": "undurragapi@gmail.com",
+            "password": "pablo9596",
+            "rol": "admin"
+        }
+        guardar_usuarios(usuarios)
+    
+    st.session_state.usuarios_db = usuarios
+    return usuarios
+
+def autenticar_usuario(email_input, password_input):
+    """OPCIÓN 1: Sanea espacios/mayúsculas y valida credenciales (soporta texto plano y hash)."""
+    usuarios_db = inicializar_usuarios()
+    
+    if not email_input or not password_input:
+        return False, "Por favor ingresa tu correo y contraseña."
+
+    email_clean = email_input.strip().lower()
+    pass_clean = password_input.strip()
+    
+    # 1. Validar existencia del correo
+    if email_clean not in usuarios_db:
+        return False, "Correo o contraseña incorrectos."
+    
+    usuario = usuarios_db[email_clean]
+    pass_guardada = str(usuario.get("password", ""))
+    
+    # Generar Hash SHA-256 por compatibilidad
+    pass_hash_input = hashlib.sha256(pass_clean.encode()).hexdigest()
+    
+    # 2. Validar contraseña (soporta texto plano y hash)
+    if pass_clean == pass_guardada or pass_hash_input == pass_guardada:
+        return True, f"¡Bienvenido, {usuario.get('nombre', 'Usuario')}!"
+    
+    return False, "Correo o contraseña incorrectos."
 
 def cargar_sesion_persistida():
     if os.path.exists(SESSION_FILE):
@@ -260,7 +321,7 @@ def eliminar_sesion_persistida():
 
 if "usuario_actual" not in st.session_state:
     saved_user = cargar_sesion_persistida()
-    usuarios_db_temp = cargar_usuarios()
+    usuarios_db_temp = inicializar_usuarios()
     if saved_user and saved_user in usuarios_db_temp:
         st.session_state.usuario_actual = saved_user
     else:
@@ -400,6 +461,10 @@ def limpiar_respuesta_json(texto_raw):
     return texto_limpio.strip()
 
 def procesar_documento_multimodal(file_path, api_key, modelo_preferido, file_extension):
+    if not GENAI_DISPONIBLE:
+        st.error("⚠️ La librería `google-genai` no está instalada en el servidor. Asegúrate de incluir `google-genai` en el archivo `requirements.txt`.")
+        return None
+
     archivo_subido = None
     client = None
     try:
@@ -527,6 +592,9 @@ def procesar_documento_multimodal(file_path, api_key, modelo_preferido, file_ext
 
 # --- EXPLICACIÓN TÉCNICA PEDAGÓGICA (IA) CON CONEXIÓN DINÁMICA ---
 def obtener_explicacion_ia(pregunta_text, alternativas, idx_correcta, idx_elegida, api_key, modelo_preferido):
+    if not GENAI_DISPONIBLE:
+        return "⚠️ La librería `google-genai` no está disponible. Asegúrate de incluirla en tu archivo `requirements.txt`."
+
     try:
         client = genai.Client(api_key=api_key.strip())
         
@@ -572,47 +640,65 @@ if st.session_state.usuario_actual is None:
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         tab_login, tab_registro = st.tabs(["Iniciar Sesión", "Registrarse"])
-        usuarios_db = cargar_usuarios()
         
         with tab_login:
-            email_ingreso = st.text_input("Correo electrónico:", key="login_email")
-            pass_ingreso = st.text_input("Contraseña:", type="password", key="login_pass")
-            st.write("")
-            if st.button("Entrar al Sistema", use_container_width=True):
-                email_ingreso = email_ingreso.strip().lower()
-                if email_ingreso in usuarios_db and usuarios_db[email_ingreso]["password"] == pass_ingreso:
-                    st.session_state.usuario_actual = email_ingreso
-                    guardar_sesion_persistida(email_ingreso)
-                    st.rerun()
-                else:
-                    st.error("Correo o contraseña incorrectos.")
+            with st.form("form_login"):
+                email_ingreso = st.text_input("Correo electrónico:", key="login_email")
+                pass_ingreso = st.text_input("Contraseña:", type="password", key="login_pass")
+                st.write("")
+                btn_login = st.form_submit_button("Entrar al Sistema", use_container_width=True)
+                
+                if btn_login:
+                    exito, mensaje = autenticar_usuario(email_ingreso, pass_ingreso)
+                    if exito:
+                        email_clean = email_ingreso.strip().lower()
+                        st.session_state.usuario_actual = email_clean
+                        guardar_sesion_persistida(email_clean)
+                        st.success(mensaje)
+                        st.rerun()
+                    else:
+                        st.error(mensaje)
                     
         with tab_registro:
-            reg_nombre = st.text_input("Nombre completo:", key="reg_name")
-            reg_email = st.text_input("Correo electrónico:", key="reg_email")
-            reg_pass = st.text_input("Contraseña:", type="password", key="reg_pass")
-            st.write("")
-            if st.button("Crear Cuenta", use_container_width=True):
-                reg_email = reg_email.strip().lower()
-                if not reg_email or not reg_pass or not reg_nombre:
-                    st.warning("Completa todos los campos.")
-                elif reg_email in usuarios_db:
-                    st.error("Este correo ya está registrado.")
-                else:
-                    usuarios_db[reg_email] = {"nombre": reg_nombre, "email": reg_email, "password": reg_pass}
-                    guardar_usuarios(usuarios_db)
-                    st.session_state.usuario_actual = reg_email
-                    guardar_sesion_persistida(reg_email)
-                    st.success("¡Cuenta creada con éxito!")
-                    st.rerun()
+            with st.form("form_registro"):
+                reg_nombre = st.text_input("Nombre completo:", key="reg_name")
+                reg_email = st.text_input("Correo electrónico:", key="reg_email")
+                reg_pass = st.text_input("Contraseña:", type="password", key="reg_pass")
+                st.write("")
+                btn_reg = st.form_submit_button("Crear Cuenta", use_container_width=True)
+                
+                if btn_reg:
+                    reg_email_clean = reg_email.strip().lower()
+                    reg_pass_clean = reg_pass.strip()
+                    reg_nombre_clean = reg_nombre.strip()
+                    
+                    if not reg_email_clean or not reg_pass_clean or not reg_nombre_clean:
+                        st.warning("Completa todos los campos.")
+                    else:
+                        usuarios_db = inicializar_usuarios()
+                        if reg_email_clean in usuarios_db:
+                            st.error("Este correo ya está registrado.")
+                        else:
+                            usuarios_db[reg_email_clean] = {
+                                "nombre": reg_nombre_clean,
+                                "email": reg_email_clean,
+                                "password": reg_pass_clean,
+                                "rol": "user"
+                            }
+                            guardar_usuarios(usuarios_db)
+                            st.session_state.usuarios_db = usuarios_db
+                            st.session_state.usuario_actual = reg_email_clean
+                            guardar_sesion_persistida(reg_email_clean)
+                            st.success("¡Cuenta creada con éxito!")
+                            st.rerun()
     st.stop()
 
-usuarios_db = cargar_usuarios()
+usuarios_db = inicializar_usuarios()
 datos_usuario = usuarios_db.get(st.session_state.usuario_actual, {"nombre": "Piloto", "email": st.session_state.usuario_actual, "password": ""})
 
 # --- BARRA LATERAL ---
 with st.sidebar:
-    st.markdown(f"### 👨‍✈️ {datos_usuario['nombre']}")
+    st.markdown(f"### 👨‍✈️ {datos_usuario.get('nombre', 'Piloto')}")
     st.caption("Piloto en Entrenamiento")
     st.divider()
     
@@ -623,6 +709,9 @@ with st.sidebar:
 
     st.divider()
     st.markdown("### ⚙️ Configuración de IA")
+    
+    if not GENAI_DISPONIBLE:
+        st.warning("⚠️ Módulo `google-genai` no detectado. Revisa tu archivo `requirements.txt` en GitHub.")
     
     if not st.session_state["gemini_api_key"]:
         user_input_key = st.text_input("Google Gemini API Key", type="password", help="Ingresa tu clave de AI Studio")
@@ -643,7 +732,8 @@ with st.sidebar:
         st.rerun()
         
     st.divider()
-    st.info(f"🟢 **Estado Conexión:** `{st.session_state['gemini_modelo']}`")
+    estado_genai = f"`{st.session_state['gemini_modelo']}`" if GENAI_DISPONIBLE else "`Librería GenAI Pendiente`"
+    st.info(f"🟢 **Estado Conexión:** {estado_genai}")
     st.write("")
     if st.button("🚪 Cerrar Sesión", type="secondary", use_container_width=True):
         st.session_state.usuario_actual = None
@@ -658,28 +748,42 @@ if st.session_state.vista == "perfil":
     col1, col2 = st.columns([2, 1])
     with col1:
         with st.form("form_perfil"):
-            nuevo_nombre = st.text_input("Nombre de usuario:", value=datos_usuario["nombre"])
-            nuevo_email = st.text_input("Correo electrónico:", value=datos_usuario["email"])
-            nueva_pass = st.text_input("Nueva contraseña:", value=datos_usuario["password"], type="password")
+            nuevo_nombre = st.text_input("Nombre de usuario:", value=datos_usuario.get("nombre", ""))
+            nuevo_email = st.text_input("Correo electrónico:", value=datos_usuario.get("email", ""))
+            nueva_pass = st.text_input("Nueva contraseña:", value=datos_usuario.get("password", ""), type="password")
             st.write("")
             if st.form_submit_button("Guardar Cambios", type="primary"):
                 email_viejo = st.session_state.usuario_actual
                 nuevo_email_limpio = nuevo_email.strip().lower()
+                nueva_pass_limpia = nueva_pass.strip()
+                nuevo_nombre_limpio = nuevo_nombre.strip()
+                
+                usuarios_db = inicializar_usuarios()
+                
                 if nuevo_email_limpio != email_viejo:
                     if nuevo_email_limpio in usuarios_db:
                         st.error("El correo ya está registrado.")
                     else:
-                        usuarios_db[nuevo_email_limpio] = {"nombre": nuevo_nombre, "email": nuevo_email_limpio, "password": nueva_pass}
-                        del usuarios_db[email_viejo]
+                        rol_actual = usuarios_db.get(email_viejo, {}).get("rol", "user")
+                        usuarios_db[nuevo_email_limpio] = {
+                            "nombre": nuevo_nombre_limpio, 
+                            "email": nuevo_email_limpio, 
+                            "password": nueva_pass_limpia,
+                            "rol": rol_actual
+                        }
+                        if email_viejo in usuarios_db:
+                            del usuarios_db[email_viejo]
                         guardar_usuarios(usuarios_db)
+                        st.session_state.usuarios_db = usuarios_db
                         st.session_state.usuario_actual = nuevo_email_limpio
                         guardar_sesion_persistida(nuevo_email_limpio)
                         st.success("¡Perfil actualizado!")
                         st.rerun()
                 else:
-                    usuarios_db[email_viejo]["nombre"] = nuevo_nombre
-                    usuarios_db[email_viejo]["password"] = nueva_pass
+                    usuarios_db[email_viejo]["nombre"] = nuevo_nombre_limpio
+                    usuarios_db[email_viejo]["password"] = nueva_pass_limpia
                     guardar_usuarios(usuarios_db)
+                    st.session_state.usuarios_db = usuarios_db
                     st.success("¡Perfil actualizado!")
                     st.rerun()
     if st.button("⬅ Volver al Inicio"):
@@ -932,7 +1036,7 @@ elif st.session_state.vista == "estudio" and st.session_state.modo_estudio_data:
 # --- VISTA: HOME ---
 else:
     st.title("📚 AeroStudio Pro - Centro de Pruebas")
-    st.markdown(f"Bienvenido de nuevo, **{datos_usuario['nombre']}**. Sube tus documentos en PDF o imágenes escaneadas para iniciar tu entrenamiento.")
+    st.markdown(f"Bienvenido de nuevo, **{datos_usuario.get('nombre', 'Piloto')}**. Sube tus documentos en PDF o imágenes escaneadas para iniciar tu entrenamiento.")
     st.divider()
 
     st.subheader("➕ Importar Nuevo Banco de Preguntas (PDF o Imágenes Escaneadas)")
@@ -955,8 +1059,10 @@ else:
                     preguntas_extraidas = []
                     
                     if usar_ia_pauta:
-                        if not st.session_state["gemini_api_key"]:
-                            st.error("⚠️️ Para usar el análisis con IA debes configurar tu API Key de Gemini.")
+                        if not GENAI_DISPONIBLE:
+                            st.error("⚠ La librería `google-genai` no está instalada en el servidor. Agrégala a `requirements.txt`.")
+                        elif not st.session_state["gemini_api_key"]:
+                            st.error("⚠ Para usar el análisis con IA debes configurar tu API Key de Gemini.")
                         else:
                             preguntas_extraidas = procesar_documento_multimodal(
                                 tmp_path, 
@@ -996,7 +1102,6 @@ else:
         indices_falladas = banco_data.get("falladas", {}).get(usuario_actual, [])
         num_falladas = len(indices_falladas)
         
-        # Conteo de preguntas sin alternativa correcta asignada
         num_sin_respuesta = sum(1 for q in todas_preguntas if q.get("correcta") is None)
 
         with st.container():
