@@ -99,24 +99,38 @@ st.markdown(f"""
 <meta name="apple-mobile-web-app-capable" content="yes">
 <style>
     {css_activo}
-    .stApp {{
-        background-color: var(--bg-main);
-        color: var(--text-main);
+
+    /* FORZADO DE ESTILOS EN CONTENEDORES INTERNOS DE STREAMLIT */
+    .stApp, [data-testid="stAppViewContainer"], [data-testid="stMainBlockContainer"] {{
+        background-color: var(--bg-main) !important;
+        color: var(--text-main) !important;
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }}
+
     header[data-testid="stHeader"] {{
         background-color: transparent !important;
         z-index: 99999;
     }}
+
+    section[data-testid="stSidebar"] {{
+        background-color: var(--sidebar-bg) !important;
+        border-right: 1px solid var(--border-color) !important;
+    }}
+
+    h1, h2, h3, h4, h5, h6, p, span, label, .stMarkdown {{
+        color: var(--text-main) !important;
+    }}
+
     button[data-testid="stSidebarCollapseButton"], button[data-testid="baseButton-header"] {{
         color: var(--text-main) !important;
         background-color: var(--bg-card) !important;
         border: 1px solid var(--border-color) !important;
         border-radius: 8px !important;
     }}
+
     div.stButton > button {{
         background: linear-gradient(135deg, var(--accent-blue) 0%, var(--accent-hover) 100%);
-        color: white;
+        color: white !important;
         border: none;
         border-radius: 8px;
         padding: 0.6rem 1.2rem;
@@ -124,15 +138,18 @@ st.markdown(f"""
         box-shadow: 0 4px 12px rgba(217, 119, 6, 0.15);
         transition: all 0.2s ease-in-out;
     }}
+
     div.stButton > button:hover {{
         transform: translateY(-2px);
     }}
+
     div.stButton > button[kind="secondary"] {{
         background: var(--bg-card);
         border: 1px solid var(--border-color);
-        color: var(--text-main);
+        color: var(--text-main) !important;
         box-shadow: none;
     }}
+
     .stTextInput input, .stSelectbox select, .stPasswordInput input {{
         background-color: var(--bg-card) !important;
         color: var(--text-main) !important;
@@ -140,21 +157,20 @@ st.markdown(f"""
         border-radius: 8px !important;
         padding: 0.6rem 1rem !important;
     }}
-    section[data-testid="stSidebar"] {{
-        background-color: var(--sidebar-bg);
-        border-right: 1px solid var(--border-color);
-    }}
+
     div[data-testid="metric-container"] {{
-        background-color: var(--bg-card);
-        border: 1px solid var(--border-color);
+        background-color: var(--bg-card) !important;
+        border: 1px solid var(--border-color) !important;
         padding: 1.2rem;
         border-radius: 10px;
     }}
+
     .stRadio label {{
         padding: 10px;
         border-radius: 8px;
         transition: background 0.2s;
     }}
+
     .stRadio label:hover {{
         background-color: var(--border-color);
     }}
